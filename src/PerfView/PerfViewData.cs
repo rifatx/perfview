@@ -37,6 +37,7 @@ using System.Threading;
 using System.Windows;
 using System.Windows.Media;
 using System.Xml;
+using Microsoft.Diagnostics.Tracing.Parsers.Tpl;
 using Utilities;
 using Address = System.UInt64;
 using EventSource = EventSources.EventSource;
@@ -389,6 +390,22 @@ namespace PerfView
             var ret = new PerfViewUserFile(extension + " file", new string[] { extension });
             Formats.Add(ret);
             return ret;
+        }
+
+        public static void AddTemplate(PerfViewFile file)
+        {
+            foreach (string extension in file.FileExtensions)
+            {
+                foreach (PerfViewFile potentalFormat in Formats)
+                {
+                    if (potentalFormat.IsMyFormat(extension))
+                    {
+                        throw new Exception($"The file extension '{extension}' is already handled by {potentalFormat.GetType().FullName}");
+                    }
+                }
+            }
+
+            Formats.Add(file);
         }
 
         /// <summary>
@@ -863,7 +880,8 @@ namespace PerfView
             new DiagSessionPerfViewFile(),
             new LinuxPerfViewData(),
             new XmlTreeFile(),
-            new EventPipePerfViewData()
+            new EventPipePerfViewData(),
+            new StracePerfViewData()
         };
 
         #region private
@@ -985,6 +1003,7 @@ namespace PerfView
         {
             m_formatName = formatName;
             m_fileExtensions = fileExtensions;
+            m_Children = new List<PerfViewTreeItem>();
         }
 
         public override string FormatName { get { return m_formatName; } }
@@ -1137,7 +1156,7 @@ namespace PerfView
 
                 worker.EndWork(delegate ()
                 {
-                    Process.Start(reportFileName);
+                    System.Diagnostics.Process.Start(reportFileName);
                 });
             });
         }
@@ -1525,14 +1544,30 @@ table {
 
     public class AutomatedAnalysisReport : PerfViewHtmlReport
     {
-        public AutomatedAnalysisReport(PerfViewFile dataFile) : base(dataFile, "Automatic CPU Analysis") { }
+        public AutomatedAnalysisReport(PerfViewFile dataFile) : base(dataFile, "Automated Trace Analysis") { }
 
         protected override void WriteHtmlBody(TraceLog dataFile, TextWriter writer, string fileName, TextWriter log)
         {
-            AutomatedAnalysisManager manager = new AutomatedAnalysisManager();
+            string analyzersDirectory = Path.Combine(SupportFiles.SupportFileDir, "Analyzers");
+            DirectoryAnalyzerResolver resolver = new DirectoryAnalyzerResolver(analyzersDirectory);
+            TraceProcessor traceProcessor = new TraceProcessor(resolver);
             AutomatedAnalysisTraceLog traceLog = new AutomatedAnalysisTraceLog(dataFile, App.GetSymbolReader(dataFile.FilePath));
-            AutomatedAnalysisResult result = manager.ProcessTrace(traceLog, log);
-            result.GenerateReport(writer);
+            TraceProcessorResult result = traceProcessor.ProcessTrace(traceLog);
+
+            using (HtmlReportGenerator reportGenerator = new HtmlReportGenerator(writer))
+            {
+                // Write out issues.
+                foreach (KeyValuePair<Microsoft.Diagnostics.Tracing.AutomatedAnalysis.Process, List<AnalyzerIssue>> pair in result.Issues)
+                {
+                    if (pair.Value.Count > 0)
+                    {
+                        reportGenerator.WriteIssuesForProcess(pair.Key, pair.Value);
+                    }
+                }
+
+                // Write the list of executed analyzers.
+                reportGenerator.WriteExecutedAnalyzerList(result.ExecutedAnalyzers);
+            }
         }
     }
 
@@ -3730,6 +3765,29 @@ table {
         private Dictionary<int /*pid*/, List<object>> m_bgJitEvents;
     }
 
+    public class PerfViewFileVersionStats : PerfViewHtmlReport
+    {
+        public PerfViewFileVersionStats(PerfViewFile dataFile) : base(dataFile, "Module Version Information") { }
+
+        protected override void WriteHtmlBody(TraceLog dataFile, TextWriter output, string fileName, TextWriter log)
+        {
+            Dictionary<int, Microsoft.Diagnostics.Tracing.Analysis.TraceProcess> processes = new Dictionary<int, Microsoft.Diagnostics.Tracing.Analysis.TraceProcess>();
+            var source = dataFile.Events.GetSource();
+
+            Microsoft.Diagnostics.Tracing.Analysis.TraceLoadedDotNetRuntimeExtensions.NeedLoadedDotNetRuntimes(source);
+            source.Process();
+            foreach (var proc in Microsoft.Diagnostics.Tracing.Analysis.TraceProcessesExtensions.Processes(source))
+            {
+                if (Microsoft.Diagnostics.Tracing.Analysis.TraceLoadedDotNetRuntimeExtensions.LoadedDotNetRuntime(proc) != null && !processes.ContainsKey(proc.ProcessID))
+                {
+                    processes.Add(proc.ProcessID, proc);
+                }
+            }
+
+            Stats.ClrStats.ToHtml(output, processes.Values.ToList(), fileName, "Module Version Information", Stats.ClrStats.ReportType.FileVersion, true, traceLog: dataFile);
+        }
+    }
+
     /// <summary>
     /// Represents all the heap snapshots in the trace
     /// </summary>
@@ -3772,7 +3830,7 @@ table {
                     // For .NET, we are looking for a Gen 2 GC Start that is induced that has GCBulkNodes after it.   
                     var lastGCStartsRelMSec = new Dictionary<int, double>();
 
-                    source.Clr.GCGenAwareStart += delegate (Microsoft.Diagnostics.Tracing.Parsers.Clr.GenAwareBeginTraceData data)
+                    source.Clr.GCGenAwareBegin += delegate (Microsoft.Diagnostics.Tracing.Parsers.Clr.GenAwareTemplateTraceData data)
                     {
                         lastGCStartsRelMSec[data.ProcessID] = data.TimeStampRelativeMSec;
                     };
@@ -4186,25 +4244,10 @@ table {
 
             if (brokenPercent > 10)
             {
-                if (is64Bit)
-                {
-                    MessageBox.Show(parentWindow, "Warning: There are " + brokenPercent.ToString("f1") +
-                        "% stacks that are broken, analysis is suspect." + "\r\n" +
-                        "This is likely due the current inability of the OS stackwalker to walk 64 bit\r\n" +
-                        "code that is dynamically (JIT) generated.\r\n\r\n" +
-                        "This can be worked around by either by NGENing the EXE,\r\n" +
-                        "forcing the EXE to run as a 32 bit app, profiling on Windows 8\r\n" +
-                        "or avoiding any top-down analysis.\r\n\r\n" +
-                        "Use the troubleshooting link at the top of the view for more information.\r\n",
-                        "Broken Stacks");
-                }
-                else
-                {
-                    MessageBox.Show(parentWindow, "Warning: There are " + brokenPercent.ToString("f1") + "% stacks that are broken\r\n" +
-                        "Top down analysis is suspect, however bottom up approaches are still valid.\r\n\r\n" +
-                        "Use the troubleshooting link at the top of the view for more information.\r\n",
-                        "Broken Stacks");
-                }
+                MessageBox.Show(parentWindow, "Warning: There are " + brokenPercent.ToString("f1") + "% stacks that are broken\r\n" +
+                    "Top down analysis is suspect, however bottom up approaches are still valid.\r\n\r\n" +
+                    "Use the troubleshooting link at the top of the view for more information.\r\n",
+                    "Broken Stacks");
 
                 return true;
             }
@@ -5394,7 +5437,13 @@ table {
                         var frameIdx = stackSource.Interner.FrameIntern("EventData Kind " + asAllocTick.AllocationKind);
                         stackIndex = stackSource.Interner.CallStackIntern(frameIdx, stackIndex);
 
-                        frameIdx = stackSource.Interner.FrameIntern("EventData Size " + asAllocTick.AllocationAmount64);
+                        if (data.Version >= 4)
+                        {
+                            frameIdx = stackSource.Interner.FrameIntern("EventData ObjectSize " + asAllocTick.ObjectSize);
+                            stackIndex = stackSource.Interner.CallStackIntern(frameIdx, stackIndex);
+                        }
+
+                        frameIdx = stackSource.Interner.FrameIntern("EventData AllocationSize " + asAllocTick.AllocationAmount64);
                         stackIndex = stackSource.Interner.CallStackIntern(frameIdx, stackIndex);
 
                         var typeName = asAllocTick.TypeName;
@@ -5407,6 +5456,16 @@ table {
                         stackIndex = stackSource.Interner.CallStackIntern(frameIdx, stackIndex);
                         goto ADD_EVENT_FRAME;
                     }
+
+                    var asTaskWaitSend = data as TaskWaitSendArgs;
+                    if (asTaskWaitSend != null)
+                    {
+                        var frameIdx = stackSource.Interner.FrameIntern("EventData Behavior " + asTaskWaitSend.Behavior);
+                        stackIndex = stackSource.Interner.CallStackIntern(frameIdx, stackIndex);
+                        
+                        goto ADD_EVENT_FRAME;
+                    }
+
 
                     var asSampleObjectAllocated = data as GCSampledObjectAllocationTraceData;
                     if (asSampleObjectAllocated != null)
@@ -5505,11 +5564,11 @@ table {
                         }
                     }
 
-                    ADD_EVENT_FRAME:
+                ADD_EVENT_FRAME:
                     // Tack on event name 
                     var eventNodeName = "Event " + data.ProviderName + "/" + data.EventName;
                     stackIndex = stackSource.Interner.CallStackIntern(stackSource.Interner.FrameIntern(eventNodeName), stackIndex);
-                    ADD_SAMPLE:
+                ADD_SAMPLE:
                     sample.StackIndex = stackIndex;
                     sample.TimeRelativeMSec = data.TimeStampRelativeMSec;
                     sample.Metric = 1;
@@ -5619,6 +5678,18 @@ table {
             {
                 ServerRequestScenarioConfiguration scenarioConfiguration = new ServerRequestScenarioConfiguration(eventLog);
                 ComputingResourceStateMachine stateMachine = new ComputingResourceStateMachine(stackSource, scenarioConfiguration, ComputingResourceViewType.Allocations);
+                stateMachine.Execute();
+            }
+            else if (streamName == "UserCrit Held CPU")
+            {
+                UserCritScenarioConfiguration scenarioConfiguration = new UserCritScenarioConfiguration(eventLog);
+                ComputingResourceStateMachine stateMachine = new ComputingResourceStateMachine(stackSource, scenarioConfiguration, ComputingResourceViewType.CPU);
+                stateMachine.Execute();
+            }
+            else if (streamName == "UserCrit Held ThreadTime")
+            {
+                UserCritScenarioConfiguration scenarioConfiguration = new UserCritScenarioConfiguration(eventLog);
+                ComputingResourceStateMachine stateMachine = new ComputingResourceStateMachine(stackSource, scenarioConfiguration, ComputingResourceViewType.ThreadTime);
                 stateMachine.Execute();
             }
             else if (streamName == "Execution Tracing")
@@ -6185,7 +6256,7 @@ table {
                 eventSource.Process();
                 return stackSource;
             }
-            else if(streamName == "Anti-Malware Real-Time Scan")
+            else if (streamName == "Anti-Malware Real-Time Scan")
             {
                 RealtimeAntimalwareComputer computer = new RealtimeAntimalwareComputer(eventSource, stackSource);
                 computer.Execute();
@@ -6922,7 +6993,7 @@ table {
             // Warn the user about the behavior of type name lookup, but only once per user.  
             if (stackSourceName == "Net OS Heap Alloc")
             {
-                if (App.ConfigData["WarnedAboutOsHeapAllocTypes"] == null)
+                if (App.UserConfigData["WarnedAboutOsHeapAllocTypes"] == null)
                 {
                     MessageBox.Show(stackWindow,
                         "Warning: Allocation type resolution only happens on window launch.\r\n" +
@@ -6932,7 +7003,7 @@ table {
                         "\r\n" +
                         "You must close and reopen this window to get the allocation types.\r\n"
                         , "May need to resolve PDBs and reopen.");
-                    App.ConfigData["WarnedAboutOsHeapAllocTypes"] = "true";
+                    App.UserConfigData["WarnedAboutOsHeapAllocTypes"] = "true";
                 }
             }
         }
@@ -7023,10 +7094,11 @@ table {
                 }
             }
 
-            var advanced = new PerfViewTreeGroup("Advanced Group");
-            var memory = new PerfViewTreeGroup("Memory Group");
-            var obsolete = new PerfViewTreeGroup("Old Group");
-            var experimental = new PerfViewTreeGroup("Experimental Group");
+            var advanced = new PerfViewTreeGroup("Advanced");
+            var memory = new PerfViewTreeGroup("Memory");
+            var frameworkAspNetWcf = new PerfViewTreeGroup(".NET Framework ASP.NET/WCF");
+            var ui = new PerfViewTreeGroup("UI");
+            var experimental = new PerfViewTreeGroup("Experimental");
             m_Children = new List<PerfViewTreeItem>();
 
             bool hasCPUStacks = false;
@@ -7061,6 +7133,7 @@ table {
             bool hasTypeLoad = false;
             bool hasAssemblyLoad = false;
             bool hasJIT = false;
+            bool hasUserCrit = false;
 
             var stackEvents = new List<TraceEventCounts>();
             foreach (var counts in tracelog.Stats)
@@ -7132,6 +7205,10 @@ table {
                 if (name.StartsWith("Loader/AssemblyLoad"))
                 {
                     hasAssemblyLoad = true;
+                }
+                if (name.EndsWith("UserCrit"))
+                {
+                    hasUserCrit = true;
                 }
 
                 if (counts.StackCount > 0)
@@ -7333,7 +7410,7 @@ table {
                 advanced.Children.Add(new PerfViewStackSource(this, "Pinning At GC Time"));
             }
 
-            if (hasGCEvents && hasCPUStacks && AppLog.InternalUser)
+            if (hasGCEvents && hasCPUStacks)
             {
                 memory.Children.Add(new PerfViewStackSource(this, "Server GC"));
             }
@@ -7363,19 +7440,32 @@ table {
                 }
             }
 
+            if (hasUserCrit)
+            {
+                if (hasCPUStacks)
+                {
+                    ui.Children.Add(new PerfViewStackSource(this, "UserCrit Held CPU"));
+                }
+
+                if (hasCSwitchStacks)
+                {
+                    ui.Children.Add(new PerfViewStackSource(this, "UserCrit Held ThreadTime"));
+                }
+            }
+
             if ((hasAspNet) || (hasWCFRequests))
             {
                 if (hasCPUStacks)
                 {
-                    obsolete.Children.Add(new PerfViewStackSource(this, "Server Request CPU"));
+                    frameworkAspNetWcf.Children.Add(new PerfViewStackSource(this, "Server Request CPU"));
                 }
                 if (hasCSwitchStacks)
                 {
-                    obsolete.Children.Add(new PerfViewStackSource(this, "Server Request Thread Time"));
+                    frameworkAspNetWcf.Children.Add(new PerfViewStackSource(this, "Server Request Thread Time"));
                 }
                 if (hasGCAllocationTicks)
                 {
-                    obsolete.Children.Add(new PerfViewStackSource(this, "Server Request Managed Allocation"));
+                    frameworkAspNetWcf.Children.Add(new PerfViewStackSource(this, "Server Request Managed Allocation"));
                 }
             }
 
@@ -7402,14 +7492,14 @@ table {
                     var name = "ASP.NET Thread Time";
                     if (hasCSwitchStacks && hasTplStacks)
                     {
-                        obsolete.Children.Add(new PerfViewStackSource(this, "ASP.NET Thread Time (with Tasks)"));
+                        frameworkAspNetWcf.Children.Add(new PerfViewStackSource(this, "ASP.NET Thread Time (with Tasks)"));
                     }
                     else if (!hasCSwitchStacks)
                     {
                         name += " (CPU ONLY)";
                     }
 
-                    obsolete.Children.Add(new PerfViewStackSource(this, name));
+                    frameworkAspNetWcf.Children.Add(new PerfViewStackSource(this, name));
                 }
             }
 
@@ -7418,7 +7508,7 @@ table {
                 advanced.Children.Add(new PerfViewIisStats(this));
             }
 
-            if (hasProjectNExecutionTracingEvents && AppLog.InternalUser)
+            if (hasProjectNExecutionTracingEvents)
             {
                 advanced.Children.Add(new PerfViewStackSource(this, "Execution Tracing"));
             }
@@ -7430,11 +7520,7 @@ table {
 
             memory.Children.Add(new PerfViewGCStats(this));
 
-            // TODO currently this is experimental enough that we don't show it publicly.  
-            if (AppLog.InternalUser)
-            {
-                memory.Children.Add(new MemoryAnalyzer(this));
-            }
+            memory.Children.Add(new MemoryAnalyzer(this));
 
             if (hasJSHeapDumps || hasDotNetHeapDumps)
             {
@@ -7449,6 +7535,7 @@ table {
             }
 
             advanced.Children.Add(new PerfViewEventStats(this));
+            advanced.Children.Add(new PerfViewFileVersionStats(this));
 
             m_Children.Add(new PerfViewEventSource(this));
 
@@ -7462,12 +7549,17 @@ table {
                 m_Children.Add(advanced);
             }
 
-            if (0 < obsolete.Children.Count)
+            if (0 < frameworkAspNetWcf.Children.Count)
             {
-                m_Children.Add(obsolete);
+                m_Children.Add(frameworkAspNetWcf);
             }
 
-            if (AppLog.InternalUser && 0 < experimental.Children.Count)
+            if (0 < ui.Children.Count)
+            {
+                m_Children.Add(ui);
+            }
+
+            if (0 < experimental.Children.Count)
             {
                 m_Children.Add(experimental);
             }
@@ -7838,6 +7930,8 @@ table {
         protected internal override void ConfigureStackWindow(string stackSourceName, StackWindow stackWindow)
         {
             stackWindow.RestoreWindow(m_guiState, FilePath);
+            stackWindow.GroupRegExTextBox.Items.Add(@"[group modules]           {%}!->module $1");
+            stackWindow.GroupRegExTextBox.Items.Add(@"[group module entries]  {%}!=>module $1");
         }
         protected internal override void FirstAction(StackWindow stackWindow)
         {
@@ -8643,7 +8737,7 @@ table {
                 m_Children.Add(advanced);
             }
 
-            if(AppLog.InternalUser && experimental.Children.Count > 0)
+            if(experimental.Children.Count > 0)
             {
                 m_Children.Add(experimental);
             }
@@ -8952,7 +9046,13 @@ table {
                                     var frameIdx = stackSource.Interner.FrameIntern("EventData Kind " + asAllocTick.AllocationKind);
                                     stackIndex = stackSource.Interner.CallStackIntern(frameIdx, stackIndex);
 
-                                    frameIdx = stackSource.Interner.FrameIntern("EventData Size " + asAllocTick.AllocationAmount64);
+                                    if (data.Version >= 4)
+                                    {
+                                        frameIdx = stackSource.Interner.FrameIntern("EventData ObjectSize " + asAllocTick.ObjectSize);
+                                        stackIndex = stackSource.Interner.CallStackIntern(frameIdx, stackIndex);
+                                    }
+
+                                    frameIdx = stackSource.Interner.FrameIntern("EventData AllocationSize " + asAllocTick.AllocationAmount64);
                                     stackIndex = stackSource.Interner.CallStackIntern(frameIdx, stackIndex);
 
                                     var typeName = asAllocTick.TypeName;
@@ -8963,6 +9063,15 @@ table {
 
                                     frameIdx = stackSource.Interner.FrameIntern("EventData TypeName " + typeName);
                                     stackIndex = stackSource.Interner.CallStackIntern(frameIdx, stackIndex);
+                                    goto ADD_EVENT_FRAME;
+                                }
+                                
+                                var asTaskWaitSend = data as TaskWaitSendArgs;
+                                if (asTaskWaitSend != null)
+                                {
+                                    var frameIdx = stackSource.Interner.FrameIntern("EventData Behavior " + asTaskWaitSend.Behavior);
+                                    stackIndex = stackSource.Interner.CallStackIntern(frameIdx, stackIndex);
+                        
                                     goto ADD_EVENT_FRAME;
                                 }
 
@@ -9181,6 +9290,7 @@ table {
             if (stackSourceName.Contains("Thread Time"))
             {
                 stackWindow.ScalingPolicy = ScalingPolicyKind.TimeMetric;
+                stackWindow.FoldRegExTextBox.Text += ";UNMANAGED_CODE_TIME;CPU";
             }
 
             if (stackSourceName.StartsWith("GC Heap Net Mem") || stackSourceName.StartsWith("GC Heap Alloc Ignore Free"))
@@ -9948,22 +10058,20 @@ table {
                     {
                         // The directories contained in the symbol cache resource _are_ in the symbol cache format
                         // which means directories are in the form of /<file.ext>/<hash>/file.ext so in this case
-                        // we use the GetFileName API since it will consider the dictory name a file name.
+                        // we use the GetFileName API since it will consider the directory name a file name.
                         var targetDir = Path.Combine(symbolCachePath, Path.GetFileName(subPath));
 
-                        if (!Directory.Exists(targetDir))
+                        // The directory exists, so we must merge the two cache directories
+                        foreach (var symbolVersionDir in Directory.EnumerateDirectories(subPath))
                         {
-                            Directory.Move(subPath, targetDir);
-                        }
-                        else
-                        {
-                            // The directory exists, so we must merge the two cache directories
-                            foreach (var symbolVersionDir in Directory.EnumerateDirectories(subPath))
+                            var targetVersionDir = Path.Combine(targetDir, Path.GetFileName(symbolVersionDir));
+                            if (!Directory.Exists(targetVersionDir))
                             {
-                                var targetVersionDir = Path.Combine(targetDir, Path.GetFileName(symbolVersionDir));
-                                if (!Directory.Exists(targetVersionDir))
+                                Directory.CreateDirectory(targetVersionDir);
+                                foreach (var symbolFilePath in Directory.EnumerateFiles(symbolVersionDir))
                                 {
-                                    Directory.Move(symbolVersionDir, targetVersionDir);
+                                    string targetFilePath = Path.Combine(targetVersionDir, Path.GetFileName(symbolFilePath));
+                                    File.Move(symbolFilePath, Path.Combine(symbolFilePath, targetFilePath));
                                 }
                             }
                         }
@@ -10042,6 +10150,64 @@ table {
             }
 
             return newResources;
+        }
+    }
+
+    public partial class StracePerfViewData : PerfViewFile
+    {
+        private string[] StreamNames = new string[]
+        {
+            "Syscalls",
+        };
+
+        public override string FormatName { get { return "strace"; } }
+
+        public override string[] FileExtensions { get { return new string[] { ".strace" }; } }
+
+        public override bool SupportsProcesses => false;
+
+        protected internal override StackSource OpenStackSourceImpl(string streamName, TextWriter log, double startRelativeMSec = 0, double endRelativeMSec = double.PositiveInfinity, Predicate<TraceEvent> predicate = null)
+        {
+            if (StreamNames.Contains(streamName))
+            {
+                string xmlPath;
+
+                xmlPath = CacheFiles.FindFile(FilePath, $"{streamName}.strace.xml.zip");
+
+#if !DEBUG
+                if (!CacheFiles.UpToDate(xmlPath, FilePath))
+#endif
+                {
+                    XmlStackSourceWriter.WriteStackViewAsZippedXml(
+                        new StraceStackSource(FilePath), xmlPath);
+                }
+
+                return new XmlStackSource(xmlPath, null);
+            }
+
+            return null;
+        }
+
+        protected override Action<Action> OpenImpl(Window parentWindow, StatusBar worker)
+        {
+            m_Children = new List<PerfViewTreeItem>()
+            {
+                new PerfViewStackSource(this, "Syscalls"),
+            };
+
+            return null;
+        }
+
+        public override ImageSource Icon { get { return GuiApp.MainWindow.Resources["FileBitmapImage"] as ImageSource; } }
+
+        protected internal override void ConfigureStackWindow(string stackSourceName, StackWindow stackWindow)
+        {
+            stackWindow.ScalingPolicy = ScalingPolicyKind.TimeMetric;
+            stackWindow.GroupRegExTextBox.Text = stackWindow.GetDefaultGroupPat();
+
+            stackWindow.CallTreeTab.IsSelected = true;      // start with the call tree view
+
+            ConfigureGroupRegExTextBox(stackWindow, windows: false);
         }
     }
 }

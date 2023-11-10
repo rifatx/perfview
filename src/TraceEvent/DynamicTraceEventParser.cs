@@ -117,6 +117,7 @@ namespace Microsoft.Diagnostics.Tracing.Parsers
             Directory.CreateDirectory(directoryPath);
             foreach (var providerManifest in DynamicProviders)
             {
+                
                 var filePath = Path.Combine(directoryPath, providerManifest.Name + ".manifest.xml");
                 providerManifest.WriteToFile(filePath);
             }
@@ -194,6 +195,14 @@ namespace Microsoft.Diagnostics.Tracing.Parsers
 
             // We also are expecting only these tasks and opcodes.  
             if (data.Opcode != (TraceEventOpcode)0xFE || data.Task != (TraceEventTask)0xFFFE)
+            {
+                return false;
+            }
+
+            // Starting with .NET 6, the manifest is written into the event stream, which results in
+            // duplicate event dispatch.  To avoid this, filter out the Microsoft-Windows-DotNETRuntime provider
+            // if it is present in the event stream.
+            if (data.ProviderGuid == ClrTraceEventParser.ProviderGuid)
             {
                 return false;
             }
@@ -847,7 +856,9 @@ namespace Microsoft.Diagnostics.Tracing.Parsers
                             first = false;
                         }
 
-                        sb.Append(keyvalue.Key).Append(":");
+                        sb.Append("\"");
+                        Quote(sb, keyvalue.Key);
+                        sb.Append("\":");
                         WriteAsJSon(sb, keyvalue.Value);
                     }
                     sb.Append(" }");

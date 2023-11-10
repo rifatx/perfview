@@ -10,9 +10,9 @@ namespace Microsoft.Diagnostics.Tracing.Stacks
     internal static class StackSourceWriterHelper
     {
         /// <summary>
-        /// we want to identify the thread for every sample to prevent from 
-        /// overlaping of samples for the concurrent code so we group the samples by Threads
-        /// this method also sorts the samples by relative time (ascending)
+        /// We want to identify the thread for every sample to prevent the 
+        /// overlapping of samples for the concurrent code so we group the samples by Threads.
+        /// This method also sorts the samples by relative time (ascending).
         /// </summary>
         internal static IReadOnlyDictionary<ThreadInfo, List<Sample>> GetSortedSamplesPerThread(StackSource stackSource)
         {
@@ -226,6 +226,16 @@ namespace Microsoft.Diagnostics.Tracing.Stacks
             var traceEvent = typeof(StackSourceWriterHelper).GetTypeInfo().Assembly.GetName();
 
             return $"{traceEvent.Name}@{traceEvent.Version}"; // sth like "Microsoft.Diagnostics.Tracing.TraceEvent@2.0.56.0"
+        }
+
+        internal static string GetEscaped(string name, Dictionary<string, string> escapedNames)
+        {
+            if (!escapedNames.TryGetValue(name, out string escaped))
+            {
+                escaped = escapedNames[name] = System.Web.HttpUtility.JavaScriptStringEncode(name);
+            }
+
+            return escaped;
         }
 
         private static int CompareSamplesByTime(Sample x, Sample y)

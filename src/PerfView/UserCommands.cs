@@ -44,8 +44,8 @@ namespace PerfViewExtensibility
         // file, your new command will not have help.   
         //
         // This can be as simple as coping the PerfView.xml file from output directory to src\PerfView\SupportFiles.
-        // HOwever you can do better than this by removing all 'method' entries that are not user commands
-        // That is members of this class.   THis makes the file (and therefore PerfView.exe) smaller.  
+        // However you can do better than this by removing all 'method' entries that are not user commands
+        // That is members of this class.   This makes the file (and therefore PerfView.exe) smaller.  
 
         /// <summary>
         /// Save Thread stacks from a NetPerf file into a *.speedscope.json file.
@@ -227,6 +227,73 @@ namespace PerfViewExtensibility
                         throw new ApplicationException("Could not find process named " + processName);
                 }
                 SaveCPUStacksForProcess(etlFile, process);
+            }
+        }
+
+        /// <summary>
+        /// Returns the process with the most amount of CpuMsec time.  Should this time be equal, the oldest ID is prioritized
+        /// </summary>
+        /// <param name="processName"> The process name to look for in the stacks </param>
+        /// <returns> The process with the greatest cpuMSec, or the oldest process if there was a tie. </returns>
+        TraceProcess ProcessWithGreatestCpuMSec(ETLDataFile etlDataFile, string processName)
+        {
+            if (etlDataFile == null || string.IsNullOrWhiteSpace(processName))
+            {
+                return null;
+            }
+            float greatestMSec = 0.0f;
+            TraceProcess ret = null;
+            for (int i = 0; i < etlDataFile.Processes.Count; i++)
+            {
+                TraceProcess process = etlDataFile.Processes[(ProcessIndex)i];
+                if (string.Compare(process.Name, processName, StringComparison.OrdinalIgnoreCase) == 0)
+                {
+                    if (greatestMSec == process.CPUMSec && (ret == null || process.ProcessID < ret.ProcessID))
+                    {
+                        ret = process;
+                        greatestMSec = process.CPUMSec;
+                    }
+                    else if (greatestMSec < process.CPUMSec)
+                    {
+                        ret = process;
+                        greatestMSec = process.CPUMSec;
+                    }
+                }
+            }
+            return ret;
+        }
+
+        /// <summary>
+        /// Save the entire CPU stacks from 'etlFileName' as a csv.  If the /process qualifier is present use it to narrow what
+        /// is put into the file to a single process.  If warmSymbolLookupMinimumValue is present, then PerfView will lookup symbols 
+        /// if that many trace events from a library are found.  If processLookupMethod can be specified as GreatestMSec to
+        /// instead get the process with the greatest msec as opposed to the last process with a name.
+        /// </summary>
+        /// <param name="etlFileName"> The name of the etl file to convert to a csv </param>
+        /// <param name="processName"> The process name to filter on </param>
+        /// <param name="warmSymbolLookupMinimumValue"> The number of trace events needed to lookup symbols </param>
+        /// <param name="processLookupMethod"> The lookup method to use to filter processes </param>
+        public void SaveCPUStacksAsCsv(string etlFileName, string processName = null, string warmSymbolLookupMinimumValue = "10", string processLookupMethod = "LastProcess")
+        {
+            using (var etlFile = OpenETLFile(etlFileName))
+            {
+                TraceProcess process = null;
+                if (processName != null)
+                {
+                    if (processLookupMethod == "GreatestMSec")
+                    {
+                        process = ProcessWithGreatestCpuMSec(etlFile, processName);
+                    }
+                    else
+                    {
+                        process = etlFile.Processes.LastProcessWithName(processName);
+                    }
+                    if (process == null)
+                    {
+                        throw new ApplicationException("Could not find process named " + processName);
+                    }
+                }
+                SaveCPUStacksForProcessAsCsv(etlFile, process, Int32.Parse(warmSymbolLookupMinimumValue));
             }
         }
 
@@ -774,7 +841,7 @@ namespace PerfViewExtensibility
 
                 // Enable all the providers the users asked for
 
-                var parsedProviders = ProviderParser.ParseProviderSpecs(etwProviderNames.Split(','), null, LogFile);
+                var parsedProviders = ProviderParser.ParseProviderSpecs(etwProviderNames.Split(','), null, null, LogFile);
                 foreach (var parsedProvider in parsedProviders)
                 {
                     LogFile.WriteLine("Enabling provider {0}:{1:x}:{2}", parsedProvider.Name, (ulong)parsedProvider.MatchAnyKeywords, parsedProvider.Level);
@@ -1182,7 +1249,7 @@ namespace PerfViewExtensibility
             CommandProcessor.UnZipIfNecessary(ref etlFile, LogFile);
 
             List<Microsoft.Diagnostics.Tracing.Analysis.TraceProcess> processes = new List<Microsoft.Diagnostics.Tracing.Analysis.TraceProcess>();
-            using (var source = new ETWTraceEventSource(etlFile))
+            using (var source = TraceEventDispatcher.GetDispatcherFromFileName(etlFile))
             {
                 Microsoft.Diagnostics.Tracing.Analysis.TraceLoadedDotNetRuntimeExtensions.NeedLoadedDotNetRuntimes(source);
                 source.Process();
@@ -1215,32 +1282,29 @@ namespace PerfViewExtensibility
         /// </summary>
         public void ServerGCReport(string etlFile)
         {
-            if (PerfView.AppLog.InternalUser)
+            CommandProcessor.UnZipIfNecessary(ref etlFile, LogFile);
+
+            List<Microsoft.Diagnostics.Tracing.Analysis.TraceProcess> gcStats = new List<Microsoft.Diagnostics.Tracing.Analysis.TraceProcess>();
+            using (TraceLog tracelog = TraceLog.OpenOrConvert(etlFile))
             {
-                CommandProcessor.UnZipIfNecessary(ref etlFile, LogFile);
-
-                List<Microsoft.Diagnostics.Tracing.Analysis.TraceProcess> gcStats = new List<Microsoft.Diagnostics.Tracing.Analysis.TraceProcess>();
-                using (TraceLog tracelog = TraceLog.OpenOrConvert(etlFile))
+                using (var source = tracelog.Events.GetSource())
                 {
-                    using (var source = tracelog.Events.GetSource())
-                    {
-                        Microsoft.Diagnostics.Tracing.Analysis.TraceLoadedDotNetRuntimeExtensions.NeedLoadedDotNetRuntimes(source);
-                        Microsoft.Diagnostics.Tracing.Analysis.TraceProcessesExtensions.AddCallbackOnProcessStart(source, proc => { proc.Log = tracelog; });
-                        source.Process();
-                        foreach (var proc in Microsoft.Diagnostics.Tracing.Analysis.TraceProcessesExtensions.Processes(source))
-                            if (Microsoft.Diagnostics.Tracing.Analysis.TraceLoadedDotNetRuntimeExtensions.LoadedDotNetRuntime(proc) != null) gcStats.Add(proc);
-                    }
+                    Microsoft.Diagnostics.Tracing.Analysis.TraceLoadedDotNetRuntimeExtensions.NeedLoadedDotNetRuntimes(source);
+                    Microsoft.Diagnostics.Tracing.Analysis.TraceProcessesExtensions.AddCallbackOnProcessStart(source, proc => { proc.Log = tracelog; });
+                    source.Process();
+                    foreach (var proc in Microsoft.Diagnostics.Tracing.Analysis.TraceProcessesExtensions.Processes(source))
+                        if (Microsoft.Diagnostics.Tracing.Analysis.TraceLoadedDotNetRuntimeExtensions.LoadedDotNetRuntime(proc) != null) gcStats.Add(proc);
                 }
-
-                var outputFileName = Path.ChangeExtension(etlFile, ".gcStats.html");
-                using (var output = File.CreateText(outputFileName))
-                {
-                    LogFile.WriteLine("Wrote GCStats to {0}", outputFileName);
-                    Stats.ClrStats.ToHtml(output, gcStats, outputFileName, "GCStats", Stats.ClrStats.ReportType.GC, false, true /* do server report */);
-                }
-                if (!App.CommandLineArgs.NoGui)
-                    OpenHtmlReport(outputFileName, "GCStats report");
             }
+
+            var outputFileName = Path.ChangeExtension(etlFile, ".gcStats.html");
+            using (var output = File.CreateText(outputFileName))
+            {
+                LogFile.WriteLine("Wrote GCStats to {0}", outputFileName);
+                Stats.ClrStats.ToHtml(output, gcStats, outputFileName, "GCStats", Stats.ClrStats.ReportType.GC, false, true /* do server report */);
+            }
+            if (!App.CommandLineArgs.NoGui)
+                OpenHtmlReport(outputFileName, "GCStats report");
         }
 
         /// <summary>
@@ -1510,6 +1574,32 @@ namespace PerfViewExtensibility
             else
                 events = etlFile.TraceLog.Events;           // All events in the process.
             return events;
+        }
+
+        /// <summary>
+        /// Save the CPU stacks for an ETL file into a perfView.xml.zip file.
+        /// </summary>
+        /// <param name="etlFile">The ETL file to save.</param>
+        /// <param name="process">The process to save. If null, save all processes.</param>
+        /// <param name="warmSymbolLookupMinimumValue"> The number of samples needed to warrant looking up the symbols on the sample server. </param>
+        private static void SaveCPUStacksForProcessAsCsv(ETLDataFile etlFile, TraceProcess process = null, int warmSymbolLookupMinimumValue = 10)
+        {
+            // Focus on a particular process if the user asked for it via command line args.
+            if (process != null)
+            {
+                etlFile.SetFilterProcess(process);
+            }
+
+            var stacks = etlFile.CPUStacks();
+
+            // Look up symbols (even on the symbol server) for modules with more than the requested number of samples
+            stacks.LookupWarmSymbols(warmSymbolLookupMinimumValue);
+            stacks.GuiState.Notes = string.Format("Created by SaveCPUStacksAsCsv from {0} on {1}", etlFile.FilePath, DateTime.Now);
+
+            // Derive the output file name from the input file name.
+            var stackSourceFileName = PerfViewFile.ChangeExtension(etlFile.FilePath, ".perfView.csv");
+            stacks.SaveAsCsvByName(stackSourceFileName);
+            LogFile.WriteLine("[Saved {0} to {1}]", etlFile.FilePath, stackSourceFileName);
         }
 
         /// <summary>

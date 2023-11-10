@@ -10,9 +10,7 @@ using Microsoft.Diagnostics.Utilities;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-#if !NETSTANDARD1_6
 using System.Dynamic;
-#endif
 using System.IO;
 using System.Reflection;
 using System.Runtime.CompilerServices;
@@ -88,7 +86,7 @@ using Address = System.UInt64;
 // used by user code WITHOUT changing the code associated with TraceEventSource. Unfortunately, it
 // has a discoverability drawback. Given a TraceEventSource (like ETWTraceEventSource), it is difficult
 // discover that you need classes like KernelTraceEventParser to do anything useful with the
-// source. As a concession to discoverabilty, TraceEventSource provides properties ('Kernel' and CLR)
+// source. As a concession to discoverability, TraceEventSource provides properties ('Kernel' and CLR)
 // for two 'well known' parsers. Thus the above example can be written
 // 
 // * ETWTraceEventSource source = new ETWTraceEventSource("output.etl"); // open an ETL file
@@ -323,6 +321,14 @@ namespace Microsoft.Diagnostics.Tracing
         public bool DataLifetimeEnabled() { return DataLifetimeMsec > 0; }
 
         /// <summary>
+        /// Finalizer
+        /// </summary>
+        ~TraceEventSource()
+        {
+            Dispose(false);
+        }
+
+        /// <summary>
         /// Closes any files and cleans up any resources associated with this TraceEventSource
         /// </summary>
         public void Dispose()
@@ -403,6 +409,21 @@ namespace Microsoft.Diagnostics.Tracing
             return ProviderNameForGuidImpl(taskOrProviderGuid);
         }
         #endregion
+
+        internal void CopyFrom(TraceEventSource source)
+        {
+            pointerSize = source.pointerSize;
+            numberOfProcessors = source.numberOfProcessors;
+            cpuSpeedMHz = source.cpuSpeedMHz;
+            utcOffsetMinutes = source.utcOffsetMinutes;
+            osVersion = source.osVersion;
+            _QPCFreq = source._QPCFreq;
+            _syncTimeQPC = source._syncTimeQPC;
+            _syncTimeUTC = source._syncTimeUTC;
+            sessionStartTimeQPC = source.sessionStartTimeQPC;
+            sessionEndTimeQPC = source.sessionEndTimeQPC;
+            useClassicETW = source.useClassicETW;
+        }
 
         internal /*protected*/ IDictionary<string, object> userData;
 
@@ -571,13 +592,11 @@ namespace Microsoft.Diagnostics.Tracing
     /// </para>
     /// </summary>
     public abstract unsafe class TraceEvent
-#if !NETSTANDARD1_6
         // To support DLR access of dynamic payload data ("((dynamic) myEvent).MyPayloadName"),
         // we derive from DynamicObject and override a couple of methods. If for some reason in
         // the future we wanted to derive from a different base class, we could also accomplish
         // this by implementing the IDynamicMetaObjectProvider interface instead.
         : DynamicObject
-#endif
     {
         /// <summary>
         /// The GUID that uniquely identifies the Provider for this event.  This can return Guid.Empty for classic (Pre-VISTA) ETW providers.  
@@ -976,7 +995,6 @@ namespace Microsoft.Diagnostics.Tracing
             }
         }
 
-#if !NETSTANDARD1_6
         // These overloads allow integration with the DLR (Dynamic Language Runtime). That
         // enables getting at payload data in a more convenient fashion, directly by name.
         // In PowerShell, it "just works" (e.g. "$myEvent.MyPayload" will just work); in
@@ -993,8 +1011,6 @@ namespace Microsoft.Diagnostics.Tracing
             result = PayloadByName(binder.Name);
             return result != null;
         }
-#endif
-
 
         // Getting at payload values.  
         /// <summary>
@@ -1711,6 +1727,19 @@ namespace Microsoft.Diagnostics.Tracing
             for (int i = 0; i < size; i++)
             {
                 res[i] = (byte)GetByteAt(offset + i);
+            }
+            return res;
+        }
+        /// <summary>
+        /// Give an offset to a int array of size 'size' in the payload bytes, return a int[] that contains
+        /// those bytes.
+        /// </summary>
+        protected internal int[] GetInt32ArrayAt(int offset, int size)
+        {
+            int[] res = new int[size];
+            for (int i = 0; i < size; i++)
+            {
+                res[i] = GetInt32At(offset + i * 4);
             }
             return res;
         }
@@ -2781,6 +2810,14 @@ namespace Microsoft.Diagnostics.Tracing
         /// </summary>
         protected internal abstract void EnumerateTemplates(Func<string, string, EventFilterResponse> eventsToObserve, Action<TraceEvent> callback);
 
+        /// <summary>
+        /// Returns the set of ETWMappings between CTF event names and the corresponding ETW Provider GUID, etc.
+        /// </summary>
+        protected internal virtual IEnumerable<CtfEventMapping> EnumerateCtfEventMappings()
+        {
+            yield break;
+        }
+
         #endregion
         #region private
 
@@ -2916,7 +2953,7 @@ namespace Microsoft.Diagnostics.Tracing
                 }
 
                 // We register the same name for old classic and manifest for some old GC events (
-                if (eventName.StartsWith("GC") && template.ID == (TraceEventID)0xFFFF &&
+                if (eventName.StartsWith("GC", StringComparison.Ordinal) && template.ID == (TraceEventID)0xFFFF &&
                     (template.ProviderGuid == ClrTraceEventParser.ProviderGuid || template.providerGuid == ClrTraceEventParser.NativeProviderGuid))
                 {
                     return;
@@ -3497,7 +3534,7 @@ namespace Microsoft.Diagnostics.Tracing
             {
                 Debug.WriteLine("Error: exception thrown during callback.  Will be swallowed!");
                 Debug.WriteLine("Exception: " + e.Message);
-                Debug.Assert(false, "Thrown exception " + e.GetType().Name + " '" + e.Message + "'");
+                Debug.Assert(false, "Thrown exception:" + e.ToString());
             }
 #endif
         }
@@ -4376,7 +4413,7 @@ namespace Microsoft.Diagnostics.Tracing
         /// There is some work needed to prepare the generic unhandledTraceEvent that we defer
         /// late (since we often don't care about unhandled events)  
         /// 
-        /// TODO this is probably not worht the complexity...
+        /// TODO this is probably not worth the complexity...
         /// </summary>
         internal void PrepForCallback()
         {
@@ -4496,7 +4533,7 @@ namespace Microsoft.Diagnostics.Tracing
     public static class ObservableExtensions
     {
         /// <summary>
-        /// Returns an IObjservable that observes all events that 'parser' knows about that  return a T.  If eventName is
+        /// Returns an IObservable that observes all events that 'parser' knows about that  return a T.  If eventName is
         /// non-null, the event's name must match 'eventName', but if eventName is null, any event that returns a T is observed. 
         /// <para>
         /// This means that Observe{TraceEvent}(parser) will observe all events that the parser can parse.  
@@ -4510,7 +4547,7 @@ namespace Microsoft.Diagnostics.Tracing
             return parser.Observe<T>(s => s == eventName);
         }
         /// <summary>
-        /// Returns an IObjservable that observes all events that 'parser' knows about that return a T and whose event
+        /// Returns an IObservable that observes all events that 'parser' knows about that return a T and whose event
         /// name matches the 'eventNameFilter' predicate.  
         /// 
         /// Note that unlike the methods on TraceEventParser, the TraceEvent object returned is already Cloned() and thus can be 
@@ -4628,7 +4665,7 @@ namespace Microsoft.Diagnostics.Tracing
 
                     // Add the event callback handler
                     m_observable.m_addHander(m_callback, this);
-                    // And the comleted callback handler
+                    // And the completed callback handler
                     m_observable.m_source.Completed += m_completedCallback;
                 }
                 public void Dispose()

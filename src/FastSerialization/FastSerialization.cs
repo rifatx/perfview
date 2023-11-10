@@ -84,6 +84,20 @@ namespace FastSerialization
     };
 
     /// <summary>
+    /// Allows users of serialization and de-serialization mechanism to specify the alignment required by the
+    /// reader.
+    /// </summary>
+#if FASTSERIALIZATION_PUBLIC
+    public
+#endif
+    enum StreamReaderAlignment : int
+    {
+        OneByte     = 1,
+        FourBytes   = 4,
+        EightBytes  = 8
+    };
+
+    /// <summary>
     /// These settings apply to use of Serializer and Deserializer specifically.
     /// </summary>
 #if FASTSERIALIZATION_PUBLIC
@@ -91,7 +105,7 @@ namespace FastSerialization
 #endif
     sealed class SerializationConfiguration
     {
-        public StreamLabelWidth StreamLabelWidth { get; set; }
+        public StreamLabelWidth StreamLabelWidth { get; set; } = StreamLabelWidth.EightBytes;
     }
 
     /// <summary>
@@ -497,9 +511,12 @@ namespace FastSerialization
     sealed class Serializer : IDisposable
     {
         /// <summary>
-        /// Create a serializer writes 'entryObject' to a file.  
+        /// Create a serializer that writes 'entryObject' to a file.
         /// </summary>
-        public Serializer(string filePath, IFastSerializable entryObject) : this(new IOStreamStreamWriter(filePath), entryObject) { }
+        /// <param name="filePath">The destination file.</param>
+        /// <param name="entryObject">The object to serialize.</param>
+        /// <param name="share">Optional sharing mode for the destination file. Defaults to <see cref="FileShare.Read"/>.</param>
+        public Serializer(string filePath, IFastSerializable entryObject, FileShare share = FileShare.Read) : this(new IOStreamStreamWriter(filePath, share: share), entryObject) { }
 
         /// <summary>
         /// Create a serializer that writes <paramref name="entryObject"/> to a <see cref="Stream"/>. The serializer

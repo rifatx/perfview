@@ -17,11 +17,11 @@ using Address = System.UInt64;
 public class GCHeapDump : IFastSerializable, IFastSerializableVersion
 {
     public GCHeapDump(string inputFileName) :
-        this(new Deserializer(inputFileName))
+        this(new Deserializer(inputFileName, new SerializationConfiguration() { StreamLabelWidth = StreamLabelWidth.FourBytes }))
     { }
 
     public GCHeapDump(Stream inputStream, string streamName) :
-        this(new Deserializer(inputStream, streamName))
+        this(new Deserializer(inputStream, streamName, new SerializationConfiguration() { StreamLabelWidth = StreamLabelWidth.FourBytes }))
     { }
 
     /// <summary>
@@ -192,7 +192,7 @@ public class GCHeapDump : IFastSerializable, IFastSerializableVersion
     private void Write(string outputFileName)
     {
         Debug.Assert(MemoryGraph != null);
-        var serializer = new Serializer(outputFileName, this);
+        var serializer = new Serializer(new IOStreamStreamWriter(outputFileName, config: new SerializationConfiguration() { StreamLabelWidth = StreamLabelWidth.FourBytes }), this);
         serializer.Close();
     }
 
@@ -233,7 +233,7 @@ public class GCHeapDump : IFastSerializable, IFastSerializableVersion
 #if PERFVIEW
         // TODO FIX NOW, need to work for PerfView64
         var heapDumpExe = Path.Combine(Utilities.SupportFiles.SupportFileDir, @"amd64\HeapDump.exe");
-        var cmd = Utilities.Command.Run(heapDumpExe + " /GetProcessesWithGCHeaps");
+        var cmd = Microsoft.Diagnostics.Utilities.Command.Run(heapDumpExe + " /GetProcessesWithGCHeaps");
         var info = new ProcessInfo();
 
         int idx = 0;

@@ -92,17 +92,17 @@ namespace PerfView
         }
         public string GetDefaultFoldPercentage()
         {
-            string defaultFoldPercentage = App.ConfigData["DefaultFoldPercent"];
+            string defaultFoldPercentage = App.UserConfigData["DefaultFoldPercent"];
             if (defaultFoldPercentage == null)
             {
-                defaultFoldPercentage = "1";
+                defaultFoldPercentage = "";
             }
 
             return defaultFoldPercentage;
         }
         public string GetDefaultFoldPat()
         {
-            string defaultFoldPat = App.ConfigData["DefaultFoldPat"];
+            string defaultFoldPat = App.UserConfigData["DefaultFoldPat"];
             if (defaultFoldPat == null)
             {
                 defaultFoldPat = "ntoskrnl!%ServiceCopyEnd";
@@ -112,12 +112,12 @@ namespace PerfView
         }
         public string GetDefaultGroupPat()
         {
-            string defaultGroupPat = App.ConfigData["DefaultGroupPat"];
+            string defaultGroupPat = App.UserConfigData["DefaultGroupPat"];
 
-            // By default, it is Just My App.  
+            // By default, it is group module entries.
             if (defaultGroupPat == null)
             {
-                defaultGroupPat = @"[Just My App]";
+                defaultGroupPat = @"[group module entries]  {%}!=>module $1";
             }
 
             return defaultGroupPat;
@@ -864,8 +864,8 @@ namespace PerfView
         }
         private void DoSetStartupPreset(object sender, RoutedEventArgs e)
         {
-            App.ConfigData["DefaultFoldPercent"] = FoldPercentTextBox.Text;
-            App.ConfigData["DefaultFoldPat"] = FoldRegExTextBox.Text;
+            App.UserConfigData["DefaultFoldPercent"] = FoldPercentTextBox.Text;
+            App.UserConfigData["DefaultFoldPat"] = FoldRegExTextBox.Text;
 
             var defaultGroupPat = GroupRegExTextBox.Text;
             if (defaultGroupPat.StartsWith("[Just My App]"))
@@ -873,7 +873,7 @@ namespace PerfView
                 defaultGroupPat = defaultGroupPat.Substring(0, 13);
             }
 
-            App.ConfigData["DefaultGroupPat"] = defaultGroupPat;
+            App.UserConfigData["DefaultGroupPat"] = defaultGroupPat;
         }
         private void DoSaveAs(object sender, RoutedEventArgs e)
         {
@@ -2113,7 +2113,7 @@ namespace PerfView
         // TODO FIX NOW clean up symbols
         /// <summary>
         /// Given a source of stacks, a process ID, and and ETL file look up all the symbols for any module in
-        /// that process that has more than 5% CPU time inclusive.   
+        /// that process that has more than 2% of measured metric inclusive.
         /// </summary>
         private static void PrimeWarmSymbols(StackSource stackSource, int processID, ETLPerfViewData etlFile, TextWriter log)
         {
@@ -2162,7 +2162,7 @@ namespace PerfView
                 }
             });
 
-            // For any module with more than 5% inclusive time, lookup symbols.  
+            // For any module with more than 2% inclusive time, lookup symbols.  
             var modulesToLookUp = new List<string>(10);
 
             foreach (string moduleName in modIdxes.Keys)
@@ -2297,7 +2297,8 @@ namespace PerfView
                 }
 
                 SortedDictionary<int, float> metricOnLine;
-                var sourceLocation = GetSourceLocation(asCallTreeNodeBase, cellText, out metricOnLine);
+                SortedDictionary<int, float> exclusiveMetricOnLine;
+                var sourceLocation = GetSourceLocation(asCallTreeNodeBase, cellText, out metricOnLine, out exclusiveMetricOnLine);
 
                 string sourcePathToOpen = null;
                 string logicalSourcePath = null;
@@ -2321,7 +2322,7 @@ namespace PerfView
                         {
                             sourcePathToOpen = CacheFiles.FindFile(sourcePathToOpen, Path.GetExtension(sourcePathToOpen));
                             StatusBar.Log("Annotating source with metric to the file " + sourcePathToOpen);
-                            AnnotateLines(logicalSourcePath, sourcePathToOpen, metricOnLine);
+                            AnnotateLines(logicalSourcePath, sourcePathToOpen, ("Inc", metricOnLine) ,("Exc", exclusiveMetricOnLine));
                         }
                     }
                 }
@@ -2360,9 +2361,10 @@ namespace PerfView
 
         // TODO FIX NOW review 
         private SourceLocation GetSourceLocation(CallTreeNodeBase asCallTreeNodeBase, string cellText,
-            out SortedDictionary<int, float> metricOnLine)
+            out SortedDictionary<int, float> metricOnLine, out SortedDictionary<int, float> exclusiveMetricOnLine)
         {
             metricOnLine = null;
+            exclusiveMetricOnLine = null;
             var m = Regex.Match(cellText, "<<(.*!.*)>>");
             if (m.Success)
             {
@@ -2372,12 +2374,14 @@ namespace PerfView
             // Find the most numerous call stack
             // TODO this can be reasonably expensive.   If it is a problem do something about it (e.g. sampling)
             var frameIndexCounts = new Dictionary<StackSourceFrameIndex, float>();
+            var exclusiveFrameIndexCounts = new Dictionary<StackSourceFrameIndex, float>();
             asCallTreeNodeBase.GetSamples(false, delegate (StackSourceSampleIndex sampleIdx)
             {
                 // Find the callStackIdx which corresponds to the name in the cell, and log it to callStackIndexCounts
                 var matchingFrameIndex = StackSourceFrameIndex.Invalid;
                 var sample = m_stackSource.GetSampleByIndex(sampleIdx);
                 var callStackIdx = sample.StackIndex;
+                bool exclusiveSample = true;
                 while (callStackIdx != StackSourceCallStackIndex.Invalid)
                 {
                     var frameIndex = m_stackSource.GetFrameIndex(callStackIdx);
@@ -2387,6 +2391,13 @@ namespace PerfView
                         matchingFrameIndex = frameIndex;        // We keep overwriting it, so we get the entry closest to the root.  
                     }
 
+                    if (exclusiveSample)
+                    {
+                        exclusiveSample = false;
+                        float count = 0;
+                        exclusiveFrameIndexCounts.TryGetValue(matchingFrameIndex, out count);
+                        exclusiveFrameIndexCounts[matchingFrameIndex] = count + sample.Metric;
+                    }
                     callStackIdx = m_stackSource.GetCallerIndex(callStackIdx);
                 }
                 if (matchingFrameIndex != StackSourceFrameIndex.Invalid)
@@ -2437,18 +2448,25 @@ namespace PerfView
             if (sourceLocation != null)
             {
                 var filePathForMax = sourceLocation.SourceFile.BuildTimeFilePath;
-                metricOnLine = new SortedDictionary<int, float>();
                 // Accumulate the counts on a line basis
-                foreach (StackSourceFrameIndex frameIdx in frameIndexCounts.Keys)
+                AccumulateCounts(frameIndexCounts, out metricOnLine);
+                AccumulateCounts(exclusiveFrameIndexCounts, out exclusiveMetricOnLine);
+
+                void AccumulateCounts(Dictionary<StackSourceFrameIndex, float> indexCounts, out SortedDictionary<int, float> metricHash)
                 {
-                    var loc = asTraceEventStackSource.GetSourceLine(frameIdx, reader);
-                    if (loc != null && loc.SourceFile.BuildTimeFilePath == filePathForMax)
+                    metricHash = new SortedDictionary<int, float>();
+
+                    foreach (StackSourceFrameIndex frameIdx in indexCounts.Keys)
                     {
-                        frameToLine[frameIdx] = loc.LineNumber;
-                        float metric;
-                        metricOnLine.TryGetValue(loc.LineNumber, out metric);
-                        metric += frameIndexCounts[frameIdx];
-                        metricOnLine[loc.LineNumber] = metric;
+                        var loc = asTraceEventStackSource.GetSourceLine(frameIdx, reader);
+                        if (loc != null && loc.SourceFile.BuildTimeFilePath == filePathForMax)
+                        {
+                            frameToLine[frameIdx] = loc.LineNumber;
+                            float metric;
+                            metricHash.TryGetValue(loc.LineNumber, out metric);
+                            metric += indexCounts[frameIdx];
+                            metricHash[loc.LineNumber] = metric;
+                        }
                     }
                 }
             }
@@ -2509,7 +2527,7 @@ namespace PerfView
             return sourceLocation;
         }
 
-        private void AnnotateLines(string inFileName, string outFileName, SortedDictionary<int, float> lineData)
+        private void AnnotateLines(string inFileName, string outFileName, params ValueTuple<string, SortedDictionary<int, float>>[] lineData)
         {
             using (var inFile = File.OpenText(inFileName))
             using (var outFile = File.CreateText(outFileName))
@@ -2525,18 +2543,21 @@ namespace PerfView
 
                     lineNum++;
 
-                    float value;
-                    if (lineData.TryGetValue(lineNum, out value))
+                    foreach (var data in lineData)
                     {
-                        outFile.Write(ToCompactString(value));
-                    }
-                    else if (lineNum == 1)
-                    {
-                        outFile.Write("Metric|");
-                    }
-                    else
-                    {
-                        outFile.Write("       ");
+                        float value;
+                        if (data.Item2.TryGetValue(lineNum, out value))
+                        {
+                            outFile.Write(ToCompactString(value));
+                        }
+                        else if (lineNum == 1)
+                        {
+                            outFile.Write($"{data.Item1.PadLeft(6)}|");
+                        }
+                        else
+                        {
+                            outFile.Write("       ");
+                        }
                     }
 
                     outFile.WriteLine(line);
@@ -2881,13 +2902,13 @@ namespace PerfView
 
                 if (value)
                 {
-                    App.ConfigData["NotesPaneHidden"] = "true";
+                    App.UserConfigData["NotesPaneHidden"] = "true";
                     m_NotesPaneHidden = true;
                     NodePaneRowDef.MaxHeight = 0;
                 }
                 else
                 {
-                    App.ConfigData["NotesPaneHidden"] = "false";
+                    App.UserConfigData["NotesPaneHidden"] = "false";
                     m_NotesPaneHidden = false;
                     NodePaneRowDef.MaxHeight = Double.PositiveInfinity;
                 }
@@ -3377,10 +3398,10 @@ namespace PerfView
 
                 if (StackWindows[0] == this && WindowState != System.Windows.WindowState.Maximized)
                 {
-                    App.ConfigData["StackWindowTop"] = Top.ToString("f0", CultureInfo.InvariantCulture);
-                    App.ConfigData["StackWindowLeft"] = Left.ToString("f0", CultureInfo.InvariantCulture);
-                    App.ConfigData["StackWindowWidth"] = RenderSize.Width.ToString("f0", CultureInfo.InvariantCulture);
-                    App.ConfigData["StackWindowHeight"] = RenderSize.Height.ToString("f0", CultureInfo.InvariantCulture);
+                    App.UserConfigData["StackWindowTop"] = Top.ToString("f0", CultureInfo.InvariantCulture);
+                    App.UserConfigData["StackWindowLeft"] = Left.ToString("f0", CultureInfo.InvariantCulture);
+                    App.UserConfigData["StackWindowWidth"] = RenderSize.Width.ToString("f0", CultureInfo.InvariantCulture);
+                    App.UserConfigData["StackWindowHeight"] = RenderSize.Height.ToString("f0", CultureInfo.InvariantCulture);
                 }
 
                 StackWindows.Remove(this);
@@ -3423,19 +3444,19 @@ namespace PerfView
                 --GuiApp.MainWindow.NumWindowsNeedingSaving;
             }
 
-            NotesPaneHidden = (App.ConfigData["NotesPaneHidden"] == "true");
+            NotesPaneHidden = (App.UserConfigData["NotesPaneHidden"] == "true");
 
             if (StackWindows.Count == 1)
             {
                 // Make sure the location is sane so it can be displayed. 
-                var top = App.ConfigData.GetDouble("StackWindowTop", Top);
+                var top = App.UserConfigData.GetDouble("StackWindowTop", Top);
                 Top = Math.Min(Math.Max(top, 0), System.Windows.SystemParameters.PrimaryScreenHeight - 200);
 
-                var left = App.ConfigData.GetDouble("StackWindowLeft", Left);
+                var left = App.UserConfigData.GetDouble("StackWindowLeft", Left);
                 Left = Math.Min(Math.Max(left, 0), System.Windows.SystemParameters.PrimaryScreenWidth - 200);
 
-                Height = App.ConfigData.GetDouble("StackWindowHeight", Height);
-                Width = App.ConfigData.GetDouble("StackWindowWidth", Width);
+                Height = App.UserConfigData.GetDouble("StackWindowHeight", Height);
+                Width = App.UserConfigData.GetDouble("StackWindowWidth", Width);
             }
         }
 
@@ -3472,7 +3493,7 @@ namespace PerfView
 
                         // Checked value and visibliity of column is based off of ConfigData.
                         // If there is no ConfigData property for it, it is defaulted to display. 
-                        string configValue = App.ConfigData[XmlConvert.EncodeName(header + "ColumnView")];
+                        string configValue = App.UserConfigData[XmlConvert.EncodeName(header + "ColumnView")];
                         if (configValue == null || configValue == "1")
                         {
                             menuItem.IsChecked = true;
@@ -3540,7 +3561,7 @@ namespace PerfView
                         // XmlConvert.EncodeName is used to handle symbols like %
                         // E.g. CallTreeViewNameColumnView
                         string name = XmlConvert.EncodeName(header + "ColumnView");
-                        App.ConfigData[name] = mItem.IsChecked ? "1" : "0";
+                        App.UserConfigData[name] = mItem.IsChecked ? "1" : "0";
                     }
                 }
             };
@@ -3896,7 +3917,7 @@ namespace PerfView
 
         private void ConfigurePresetMenu()
         {
-            var presets = App.ConfigData["Presets"];
+            var presets = App.UserConfigData["Presets"];
             m_presets = Preset.ParseCollection(presets);
 
             foreach (var preset in m_presets)
@@ -3985,7 +4006,7 @@ namespace PerfView
                 m_presets.Insert(0, preset);
                 m_presets.Sort((x, y) => Comparer<string>.Default.Compare(x.Name, y.Name));
             }
-            App.ConfigData["Presets"] = Preset.Serialize(m_presets);
+            App.UserConfigData["Presets"] = Preset.Serialize(m_presets);
 
             DoUpdatePresetMenu();
         }
@@ -3996,7 +4017,7 @@ namespace PerfView
             managePresetsDialog.Owner = this;
             managePresetsDialog.ShowDialog();
             m_presets = managePresetsDialog.Presets;
-            App.ConfigData["Presets"] = Preset.Serialize(m_presets);
+            App.UserConfigData["Presets"] = Preset.Serialize(m_presets);
             DoUpdatePresetMenu();
         }
 
