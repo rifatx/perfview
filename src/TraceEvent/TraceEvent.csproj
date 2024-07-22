@@ -1,5 +1,5 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
-<Project Sdk="Microsoft.NET.Sdk"> 
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFrameworks>netstandard2.0</TargetFrameworks>
@@ -33,7 +33,15 @@
 
   <Target Name="SetNuspecProperties">
     <PropertyGroup>
-      <NuspecProperties>Configuration=$(Configuration);version=$(InformationalVersion);OutDir=$(OutputPath)</NuspecProperties>
+      <NuspecProperties>$(NuspecProperties);Configuration=$(Configuration)</NuspecProperties>
+      <NuspecProperties>$(NuspecProperties);version=$(InformationalVersion)</NuspecProperties>
+      <NuspecProperties>$(NuspecProperties);OutDir=$(OutputPath)</NuspecProperties>
+      <NuspecProperties>$(NuspecProperties);MicrosoftWin32RegistryVersion=$(MicrosoftWin32RegistryVersion)</NuspecProperties>
+      <NuspecProperties>$(NuspecProperties);SystemCollectionsImmutableVersion=$(SystemCollectionsImmutableVersion)</NuspecProperties>
+      <NuspecProperties>$(NuspecProperties);SystemReflectionMetadataVersion=$(SystemReflectionMetadataVersion)</NuspecProperties>
+      <NuspecProperties>$(NuspecProperties);SystemReflectionTypeExtensionsVersion=$(SystemReflectionTypeExtensionsVersion)</NuspecProperties>
+      <NuspecProperties>$(NuspecProperties);SystemRuntimeCompilerServicesUnsafeVersion=$(SystemRuntimeCompilerServicesUnsafeVersion)</NuspecProperties>
+      <NuspecProperties>$(NuspecProperties);MicrosoftDiagnosticsNETCoreClientVersion=$(MicrosoftDiagnosticsNETCoreClientVersion)</NuspecProperties>
     </PropertyGroup>
   </Target>
 
@@ -44,22 +52,13 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.NETCore.Portable.Compatibility" Version="$(MicrosoftNETCorePortableCompatibilityVersion)" />
     <PackageReference Include="Microsoft.Diagnostics.Tracing.TraceEvent.SupportFiles" Version="$(MicrosoftDiagnosticsTracingTraceEventSupportFilesVersion)" />
     <PackageReference Include="Microsoft.Win32.Registry" Version="$(MicrosoftWin32RegistryVersion)" />
-    <PackageReference Include="System.Diagnostics.Process" Version="$(SystemDiagnosticsProcessVersion)" />
-    <PackageReference Include="System.Diagnostics.TraceSource" Version="$(SystemDiagnosticsTraceSourceVersion)" />
-    <PackageReference Include="System.IO.Compression" Version="$(SystemIOCompressionVersion)" />
-    <PackageReference Include="System.IO.UnmanagedMemoryStream" Version="$(SystemIOUnmanagedMemoryStreamVersion)" />
-    <PackageReference Include="System.Net.Requests" Version="$(SystemNetRequestsVersion)" />
-    <PackageReference Include="System.Net.NameResolution" Version="$(SystemNetNameResolutionVersion)" />
+    <PackageReference Include="System.Collections.Immutable" Version="$(SystemCollectionsImmutableVersion)" />
     <PackageReference Include="System.Reflection.Metadata" Version="$(SystemReflectionMetadataVersion)" />
     <PackageReference Include="System.Reflection.TypeExtensions" Version="$(SystemReflectionTypeExtensionsVersion)" />
-    <PackageReference Include="System.Runtime" Version="$(SystemRuntimeVersion)" />
     <PackageReference Include="System.Runtime.CompilerServices.Unsafe" Version="$(SystemRuntimeCompilerServicesUnsafeVersion)" />
-    <PackageReference Include="System.Security.Cryptography.Algorithms" Version="$(SystemSecurityCryptographyAlgorithmsVersion)" />
-    <PackageReference Include="System.Threading.Tasks.Parallel" Version="$(SystemThreadingTasksParallelVersion)" />
-    <PackageReference Include="System.Threading.Thread" Version="$(SystemThreadingThreadVersion)" />
+    <PackageReference Include="Microsoft.Diagnostics.NETCore.Client" Version="$(MicrosoftDiagnosticsNETCoreClientVersion)" />
   </ItemGroup>
 
   <ItemGroup>

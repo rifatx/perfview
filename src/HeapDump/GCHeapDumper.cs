@@ -20,6 +20,9 @@ using System.Threading;
 using Address = System.UInt64;
 using Microsoft.Diagnostics.Utilities;
 using Microsoft.Diagnostics.HeapDump;
+using Azure.Core;
+
+
 #if CROSS_GENERATION_LIVENESS
 using Microsoft.Diagnostics.CrossGenerationLiveness;
 #endif
@@ -35,9 +38,10 @@ public class GCHeapDumper
     /// to dump a heap.  
     /// </summary>
     /// <param name="log"></param>
-    public GCHeapDumper(TextWriter log)
+    public GCHeapDumper(TextWriter log, TokenCredential symbolServerAuthCredential = null)
     {
         m_origLog = log;
+        m_symbolServerAuthCredential = symbolServerAuthCredential;
         m_copyOfLog = new StringWriter();
         m_log = new TeeTextWriter(m_copyOfLog, m_origLog);
 
@@ -274,11 +278,11 @@ public class GCHeapDumper
         {
             try
             {
-                dataTarget = DataTarget.CreateSnapshotAndAttach(processID);
+                dataTarget = DataTarget.CreateSnapshotAndAttach(processID, m_symbolServerAuthCredential);
             }
             catch
             {
-                dataTarget = DataTarget.AttachToProcess(processID, Freeze);
+                dataTarget = DataTarget.AttachToProcess(processID, Freeze, m_symbolServerAuthCredential);
             }
         }
         else
@@ -288,7 +292,7 @@ public class GCHeapDumper
                 UseOSMemoryFeatures = false // disable AWE
             };
 
-            dataTarget = DataTarget.LoadDump(processDumpFile, cacheOptions);
+            dataTarget = DataTarget.LoadDump(processDumpFile, cacheOptions, m_symbolServerAuthCredential);
         }
 
         if (dataTarget.DataReader.PointerSize != IntPtr.Size)
@@ -928,7 +932,7 @@ public class GCHeapDumper
             // ClrMD returns UOH segments with seg.Generation2.Start == seg.Start and seg.Generation2.End == seg.End
             // To make it easy to determine the real generation of the object, augmenting the object with Gen3End and
             // Gen4End as follows such that DotNetHeapInfo.GenerationFor works.
-            if (seg.IsPinnedObjectSegment)
+            if (seg.Kind == GCSegmentKind.Pinned)
             {
                 gcHeapDumpSegment.Gen0End = seg.End;
                 gcHeapDumpSegment.Gen1End = seg.End;
@@ -936,7 +940,7 @@ public class GCHeapDumper
                 gcHeapDumpSegment.Gen3End = seg.End;
                 gcHeapDumpSegment.Gen4End = seg.End;
             }
-            else if (seg.IsLargeObjectSegment)
+            else if (seg.Kind == GCSegmentKind.Large)
             {
                 gcHeapDumpSegment.Gen0End = seg.End;
                 gcHeapDumpSegment.Gen1End = seg.End;
@@ -956,7 +960,7 @@ public class GCHeapDumper
             gcHeapDumpSegments.Add(gcHeapDumpSegment);
 
             total += seg.Length;
-            m_log.WriteLine("Segment: Start {0,16:x} Length: {1,16:x} {2,11:n3}M LOH:{3}", seg.Start, seg.Length, seg.Length / 1000000.0, seg.IsLargeObjectSegment);
+            m_log.WriteLine("Segment: Start {0,16:x} Length: {1,16:x} {2,11:n3}M Kind:{3}", seg.Start, seg.Length, seg.Length / 1000000.0, seg.Kind);
         }
 
         m_log.WriteLine("Segment: Total {0,16} Length: {1,16:x} {2,11:n3}M", "", total, total / 1000000.0);
@@ -1003,7 +1007,7 @@ public class GCHeapDumper
     private MemoryNodeBuilder DumpRoots(DataTarget dataTarget, ClrRuntime[] runtimes)
     {
         int numRoots = 0;
-        var dotNetRoot = new MemoryNodeBuilder(m_gcHeapDump.MemoryGraph, "[.NET Roots]");
+        var dotNetRoot = new MemoryNodeBuilder(m_gcHeapDump.MemoryGraph, GCHeapDumpNames.Bracket(GCHeapDumpNames.DotNetRootsTitle));
         try
         {
             m_log.WriteLine("{0,5:f1}s: Scanning Static Variables", m_sw.Elapsed.TotalSeconds);
@@ -1042,7 +1046,7 @@ public class GCHeapDumper
 
             m_log.WriteLine("{0,5:f1}s: Scanning Actual GC roots", m_sw.Elapsed.TotalSeconds);
             var rootsStartTimeMSec = m_sw.Elapsed.TotalMilliseconds;
-            foreach (IClrRoot root in runtimes.SelectMany(r => r.Heap.EnumerateRoots()))
+            foreach (ClrRoot root in runtimes.SelectMany(r => r.Heap.EnumerateRoots()))
             {
                 if (!root.Object.IsValid)
                     continue;
@@ -1052,19 +1056,20 @@ public class GCHeapDumper
                 bool pinned = root.IsPinned;
                 ComCallableWrapper ccwInfo = obj.HasComCallableWrapper ? obj.GetComCallableWrapper() : null;
 
+                // NOTE: If changing these names, need to document as a breaking change in release notes.
                 string name;
                 switch (kind)
                 {
                     case ClrRootKind.Stack:
-                        name = "local vars";
+                        name = GCHeapDumpNames.LocalVarsRootTitle;
                         break;
 
                     case ClrRootKind.RefCountedHandle:
-                        name = "COM/WinRT Objects";
+                        name = GCHeapDumpNames.COMWinRTRootTitle;
                         break;
 
                     default:
-                        name = kind.ToString();
+                        name = GetRootTitle(kind);
                         break;
                 };
 
@@ -1082,6 +1087,31 @@ public class GCHeapDumper
         m_log.Flush();
 
         return dotNetRoot;
+    }
+
+    private static string GetRootTitle(ClrRootKind rootKind)
+    {
+        switch (rootKind)
+        {
+            case ClrRootKind.FinalizerQueue:
+                return GCHeapDumpNames.FinalizerQueueRootTitle;
+            case ClrRootKind.StrongHandle:
+                return GCHeapDumpNames.StrongHandleRootTitle;
+            case ClrRootKind.PinnedHandle:
+                return GCHeapDumpNames.PinnedHandleRootTitle;
+            case ClrRootKind.Stack:
+                return GCHeapDumpNames.StackRootTitle;
+            case ClrRootKind.RefCountedHandle:
+                return GCHeapDumpNames.RefCountedHandleRootTitle;
+            case ClrRootKind.AsyncPinnedHandle:
+                return GCHeapDumpNames.AsyncPinnedHandleRootTitle;
+            case ClrRootKind.SizedRefHandle:
+                return GCHeapDumpNames.SizedRefHandleRootTitle;
+            case ClrRootKind.None:
+                return "None";
+            default:
+                throw new ArgumentOutOfRangeException("rootKind");
+        };
     }
 
     private void WriteRoot(IDataReader reader, MemoryNodeBuilder dotNetRoot, ClrObject obj, ClrRootKind kind, bool pinned, ComCallableWrapper ccwInfo, string name, ref int numRoots)
@@ -1116,19 +1146,19 @@ public class GCHeapDumper
             if (comPtr != 0)
                 m_gcHeapDump.MemoryGraph.SetNode(ccwNode, ccwTypeIndex, 200, ccwChildren);
 
-            nodeToAddRootTo = nodeToAddRootTo.FindOrCreateChild("[COM/WinRT Objects]");
+            nodeToAddRootTo = nodeToAddRootTo.FindOrCreateChild(GCHeapDumpNames.Bracket(GCHeapDumpNames.COMWinRTRootTitle));
             nodeToAddRootTo.AddChild(ccwNode);
         }
         else
         {
             if (kind == (ClrRootKind)(-1))
-                nodeToAddRootTo = nodeToAddRootTo.FindOrCreateChild("[static vars]");
+                nodeToAddRootTo = nodeToAddRootTo.FindOrCreateChild(GCHeapDumpNames.Bracket(GCHeapDumpNames.StaticVarsRootTitle));
 
             // Add pinned local vars to their own node
             if (pinned && kind == ClrRootKind.Stack)
-                nodeToAddRootTo = nodeToAddRootTo.FindOrCreateChild("[Pinned local vars]");
+                nodeToAddRootTo = nodeToAddRootTo.FindOrCreateChild(GCHeapDumpNames.Bracket(GCHeapDumpNames.PinnedLocalVarsRootTitle));
             else
-                nodeToAddRootTo = nodeToAddRootTo.FindOrCreateChild("[" + name + "]");
+                nodeToAddRootTo = nodeToAddRootTo.FindOrCreateChild(GCHeapDumpNames.Bracket(name));
 
             NodeIndex child = m_gcHeapDump.MemoryGraph.GetNodeIndex(obj);
             nodeToAddRootTo.AddChild(child);
@@ -1147,7 +1177,7 @@ public class GCHeapDumper
 
         if (m_dotNetRoot != NodeIndex.Invalid && m_JSRoot != NodeIndex.Invalid)
         {
-            var rootNode = new MemoryNodeBuilder(m_gcHeapDump.MemoryGraph, "[GC Heaps]");
+            var rootNode = new MemoryNodeBuilder(m_gcHeapDump.MemoryGraph, GCHeapDumpNames.Bracket(GCHeapDumpNames.GCHeapsTitle));
             rootNode.AddChild(m_JSRoot);
             rootNode.AddChild(m_dotNetRoot);
             m_gcHeapDump.MemoryGraph.RootIndex = rootNode.Build();
@@ -1401,7 +1431,7 @@ public class GCHeapDumper
                     if (moduleName != null)
                         fullTypeName = Path.GetFileNameWithoutExtension(moduleName) + "!" + fullTypeName;
 
-                    var typeName = $"[RCW {fullTypeName} RefCnt: {rcwData.RefCount:n0}]";
+                    var typeName = $"[{GCHeapDumpNames.RCWPrefix} {fullTypeName} RefCnt: {rcwData.RefCount:n0}]";
 
                     // We add 1000 to account for the overhead of the RCW that is NOT on the GC heap.
                     if (objSizeAsInt < int.MaxValue - 1000)
@@ -1552,6 +1582,8 @@ public class GCHeapDumper
     private TextWriter m_log;               // Where we send messages
     private StringWriter m_copyOfLog;       // We keep a copy of all logged messages here to append to output file. 
     private Stopwatch m_sw;                 // We keep track of how long it takes.  
+
+    private TokenCredential m_symbolServerAuthCredential;
 
     private GCHeapDump m_gcHeapDump;        // The image of what we are putting in the file
     private NodeIndex m_JSRoot = NodeIndex.Invalid;     // The root of the JS heap

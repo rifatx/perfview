@@ -37,7 +37,6 @@
     <NeutralLanguage>en</NeutralLanguage>
 
     <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
-
     <NuspecFile>PerfView.nuspec</NuspecFile>
     <GenerateNuspecDependsOn>$(GenerateNuspecDependsOn);SetNuspecProperties</GenerateNuspecDependsOn>
   </PropertyGroup>
@@ -87,11 +86,13 @@
     <PackageReference Include="Microsoft.Diagnostics.Tracing.TraceEvent.SupportFiles" Version="$(MicrosoftDiagnosticsTracingTraceEventSupportFilesVersion)" PrivateAssets="all" />
     <PackageReference Include="Microsoft.Identity.Client" Version="$(MicrosoftIdentityClientVersion)" GeneratePathProperty="true" />
     <PackageReference Include="Microsoft.Identity.Client.Extensions.Msal" Version="$(MicrosoftIdentityClientExtensionsMsalVersion)" GeneratePathProperty="true" />
+    <PackageReference Include="Microsoft.IdentityModel.Abstractions" Version="$(MicrosoftIdentityModelAbstractionsVersion)" GeneratePathProperty="true" />
     <PackageReference Include="Microsoft.IdentityModel.Tokens" Version="$(MicrosoftIdentityModelTokensVersion)" GeneratePathProperty="true" />
     <PackageReference Include="Microsoft.IdentityModel.JsonWebTokens" Version="$(MicrosoftIdentityModelJsonWebTokensVersion)" GeneratePathProperty="true" />
     <PackageReference Include="PerfView.SupportFiles" Version="$(PerfViewSupportFilesVersion)" PrivateAssets="all" />
     <PackageReference Include="System.Buffers" Version="$(SystemBuffersVersion)" GeneratePathProperty="true" />
     <PackageReference Include="System.Diagnostics.DiagnosticSource" Version="$(SystemDiagnosticsDiagnosticSourceVersion)" GeneratePathProperty="true" />
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="$(SystemSecurityCryptographyProtectedDataVersion)" GeneratePathProperty="true" />
     <PackageReference Include="System.Memory" Version="$(SystemMemoryVersion)" GeneratePathProperty="true" />
     <PackageReference Include="System.Numerics.Vectors" Version="$(SystemNumericsVectorsVersion)" GeneratePathProperty="true" />
     <PackageReference Include="System.Text.Encodings.Web" Version="$(SystemTextEncodingsWebVersion)" GeneratePathProperty="true" />
@@ -120,6 +121,7 @@
     <ProjectReference Include="..\CSVReader\CSVReader.csproj" />
     <ProjectReference Include="..\EtwClrProfilerSigning\EtwClrProfilerSigning.csproj" />
     <ProjectReference Include="..\FastSerialization\FastSerialization.csproj" />
+    <ProjectReference Include="..\SymbolsAuth\SymbolsAuth.csproj" />
     <ProjectReference Include="..\traceEvent\TraceEvent.csproj" />
   </ItemGroup>
 
@@ -141,6 +143,9 @@
   </Target>
 
   <ItemGroup>
+    <Compile Include="..\HeapDumpCommon\GCHeapDumpNames.cs">
+      <Link>memory\GCHeapDumpNames.cs</Link>
+    </Compile>
     <Compile Include="..\heapDump\GCHeapDump.cs">
       <Link>memory\GCHeapDump.cs</Link>
     </Compile>
@@ -219,15 +224,6 @@
       <LogicalName>.\x86\msdia140.dll</LogicalName>
       <Link>x86\msdia140.dll</Link>
       <Visible>False</Visible>
-    </EmbeddedResource>
-    <EmbeddedResource Include="$(PerfViewSupportFilesBase)native\x86\sd.exe">
-      <Type>Non-Resx</Type>
-      <WithCulture>false</WithCulture>
-      <LogicalName>.\x86\sd.exe</LogicalName>
-      <Link>x86\sd.exe</Link>
-      <Visible>False</Visible>
-      <!-- Copy to output directory. Needed for debugger to work in scenarios that use these DLLs. -->
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </EmbeddedResource>
     <EmbeddedResource Include="$(TraceEventSupportFilesBase)native\x86\KernelTraceControl.dll">
       <Type>Non-Resx</Type>
@@ -377,6 +373,13 @@
       <Link>PerfView.xml</Link>
       <Visible>False</Visible>
     </EmbeddedResource>
+    <EmbeddedResource Include="..\SymbolsAuth\bin\$(Configuration)\netstandard2.0\Microsoft.Diagnostics.Tracing.TraceEvent.SymbolsAuthentication.dll">
+      <Type>Non-Resx</Type>
+      <WithCulture>false</WithCulture>
+      <LogicalName>.\Microsoft.Diagnostics.Tracing.TraceEvent.SymbolsAuthentication.dll</LogicalName>
+      <Link>Microsoft.Diagnostics.Tracing.TraceEvent.SymbolsAuthentication.dll</Link>
+      <Visible>False</Visible>
+    </EmbeddedResource>
     <EmbeddedResource Include="..\TraceEvent\bin\$(Configuration)\netstandard2.0\Microsoft.Diagnostics.Tracing.TraceEvent.dll">
       <Type>Non-Resx</Type>
       <WithCulture>false</WithCulture>
@@ -493,18 +496,25 @@
       <Link>Azure.Identity.dll</Link>
       <Visible>False</Visible>
     </EmbeddedResource>
-    <EmbeddedResource Include="$(PkgMicrosoft_Identity_Client)\lib\net461\Microsoft.Identity.Client.dll">
+    <EmbeddedResource Include="$(PkgMicrosoft_Identity_Client)\lib\net462\Microsoft.Identity.Client.dll">
       <Type>Non-Resx</Type>
       <WithCulture>false</WithCulture>
       <LogicalName>.\Microsoft.Identity.Client.dll</LogicalName>
       <Link>Microsoft.Identity.Client.dll</Link>
       <Visible>False</Visible>
     </EmbeddedResource>
-    <EmbeddedResource Include="$(PkgMicrosoft_Identity_Client_Extensions_Msal)\lib\net45\Microsoft.Identity.Client.Extensions.Msal.dll">
+    <EmbeddedResource Include="$(PkgMicrosoft_Identity_Client_Extensions_Msal)\lib\netstandard2.0\Microsoft.Identity.Client.Extensions.Msal.dll">
       <Type>Non-Resx</Type>
       <WithCulture>false</WithCulture>
       <LogicalName>.\Microsoft.Identity.Client.Extensions.Msal.dll</LogicalName>
       <Link>Microsoft.Identity.Client.Extensions.Msal.dll</Link>
+      <Visible>False</Visible>
+    </EmbeddedResource>
+    <EmbeddedResource Include="$(PkgMicrosoft_IdentityModel_Abstractions)\lib\net461\Microsoft.IdentityModel.Abstractions.dll">
+      <Type>Non-Resx</Type>
+      <WithCulture>false</WithCulture>
+      <LogicalName>.\Microsoft.IdentityModel.Abstractions.dll</LogicalName>
+      <Link>Microsoft.IdentityModel.Abstractions.dll</Link>
       <Visible>False</Visible>
     </EmbeddedResource>
     <EmbeddedResource Include="$(PkgMicrosoft_IdentityModel_JsonWebTokens)\lib\net461\Microsoft.IdentityModel.JsonWebTokens.dll">
@@ -528,7 +538,7 @@
       <Link>System.Buffers.dll</Link>
       <Visible>False</Visible>
     </EmbeddedResource>
-    <EmbeddedResource Include="$(PkgSystem_Diagnostics_DiagnosticSource)\lib\net461\System.Diagnostics.DiagnosticSource.dll">
+    <EmbeddedResource Include="$(PkgSystem_Diagnostics_DiagnosticSource)\lib\net462\System.Diagnostics.DiagnosticSource.dll">
       <Type>Non-Resx</Type>
       <WithCulture>false</WithCulture>
       <LogicalName>.\System.Diagnostics.DiagnosticSource.dll</LogicalName>
@@ -549,14 +559,21 @@
       <Link>System.Numerics.Vectors.dll</Link>
       <Visible>False</Visible>
     </EmbeddedResource>
-    <EmbeddedResource Include="$(PkgSystem_Text_Encodings_Web)\lib\net461\System.Text.Encodings.Web.dll">
+    <EmbeddedResource Include="$(PkgSystem_Security_Cryptography_ProtectedData)\lib\net461\System.Security.Cryptography.ProtectedData.dll">
+      <Type>Non-Resx</Type>
+      <WithCulture>false</WithCulture>
+      <LogicalName>.\System.Security.Cryptography.ProtectedData.dll</LogicalName>
+      <Link>System.Security.Cryptography.ProtectedData.dll</Link>
+      <Visible>False</Visible>
+    </EmbeddedResource>
+    <EmbeddedResource Include="$(PkgSystem_Text_Encodings_Web)\lib\net462\System.Text.Encodings.Web.dll">
       <Type>Non-Resx</Type>
       <WithCulture>false</WithCulture>
       <LogicalName>.\System.Text.Encodings.Web.dll</LogicalName>
       <Link>System.Text.Encodings.Web.dll</Link>
       <Visible>False</Visible>
     </EmbeddedResource>
-    <EmbeddedResource Include="$(PkgSystem_Text_Json)\lib\net461\System.Text.Json.dll">
+    <EmbeddedResource Include="$(PkgSystem_Text_Json)\lib\net462\System.Text.Json.dll">
       <Type>Non-Resx</Type>
       <WithCulture>false</WithCulture>
       <LogicalName>.\System.Text.Json.dll</LogicalName>

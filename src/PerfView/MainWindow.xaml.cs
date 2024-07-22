@@ -1,4 +1,5 @@
 ﻿using Controls;
+using Microsoft.Diagnostics.Symbols.Authentication;
 using Microsoft.Diagnostics.Tracing.Session;
 using Microsoft.Diagnostics.Utilities;
 using PerfView.Dialogs;
@@ -1047,6 +1048,8 @@ namespace PerfView
     /// </summary>
     public partial class MainWindow : Window
     {
+        private bool _testing;
+
         // TODO FIX NOW do a better job keeping track of open windows
         public int NumWindowsNeedingSaving;
 
@@ -1060,8 +1063,10 @@ namespace PerfView
         /// </summary>
         public ThemeViewModel ThemeViewModel { get; }
 
-        public MainWindow()
+        public MainWindow(bool testing = false)
         {
+            _testing = testing;
+
             ThemeViewModel = new ThemeViewModel(App.UserConfigData);
             InitializeComponent();
             Directory.HistoryLength = 25;
@@ -1140,6 +1145,7 @@ namespace PerfView
             // Initialize configuration options.
             InitializeOpenToLastUsedDirectory();
             InitializeDoNotCompressStackFramesOnCopy();
+            InitializeTruncateRawEventData();
 
             InitializeFeedback();
         }
@@ -1202,6 +1208,35 @@ namespace PerfView
             App.UserConfigData["ExperimentalGCFeatures"] = newValue.ToString();
             Option_ExperimentalGCFeatures.IsChecked = newValue;
             Stats.GcStats.EnableExperimentalFeatures = newValue;
+        }
+
+        /// <summary>
+        /// Initial read-in of the user settings to check if they had previously opted-in for the TruncateRawEventData option
+        /// </summary>
+        public void InitializeTruncateRawEventData()
+        {
+            bool willTruncate;
+            if (!bool.TryParse(App.UserConfigData["TruncateRawEventData"], out willTruncate))
+            {
+                // the default behavior of PerfView has always been to truncate the event data
+                // so if the TryParse fails for any reason, then opt for the original behavior
+                willTruncate = true;
+            }
+            Option_TruncateRawEventData.IsChecked = willTruncate;
+            EventWindow.TruncateRawEventData = willTruncate;
+        }
+
+        /// <summary>
+        /// Toggles the option to truncate or not the raw event data when an event is dumped from the Events view
+        /// </summary>
+        public void ToggleTruncateRawEventData(object sender, RoutedEventArgs e)
+        {
+            bool currentValue;
+            bool.TryParse(App.UserConfigData["TruncateRawEventData"], out currentValue);
+            bool newValue = !currentValue;
+            App.UserConfigData["TruncateRawEventData"] = newValue.ToString();
+            Option_TruncateRawEventData.IsChecked = newValue;
+            EventWindow.TruncateRawEventData = newValue;
         }
 
         /// <summary>
@@ -1629,7 +1664,7 @@ namespace PerfView
             var videoUrl = Path.Combine(Path.GetDirectoryName(SupportFiles.MainAssemblyPath), @"PerfViewVideos\PerfViewVideos.htm");
             if (!File.Exists(videoUrl))
             {
-                if (!AllowNativateToWeb)
+                if (!AllowNavigateToWeb)
                 {
                     StatusBar.LogError("Navigating to web disallowed, canceling.");
                     return;
@@ -2055,7 +2090,11 @@ namespace PerfView
                 DoAbort(null, null);
             }
 
-            // DO NOT call Environment.Exit(0) here, it will kill the test runner, and tests won't complete.
+            // DO NOT call Environment.Exit(0) under tests, it will kill the test runner, and tests won't complete.
+            if (!_testing)
+            {
+                Environment.Exit(0);
+            }
         }
 
         // GUI Command objects.
@@ -2239,11 +2278,16 @@ namespace PerfView
 
                 s_Browser.Browser.Navigating += delegate (object sender, NavigatingCancelEventArgs e)
                 {
-                    if (e.Uri != null && e.Uri.Host.Length > 0)
+                    if (e.Uri != null && !string.IsNullOrEmpty(e.Uri.Host))
                     {
-                        if (!GuiApp.MainWindow.AllowNativateToWeb)
+                        if (!GuiApp.MainWindow.AllowNavigateToWeb)
                         {
                             GuiApp.MainWindow.StatusBar.LogError("Navigating to web disallowed, canceling.");
+                            e.Cancel = true;
+                        }
+                        else
+                        {
+                            OpenExternalBrowser(e.Uri);
                             e.Cancel = true;
                         }
                     }
@@ -2282,31 +2326,36 @@ namespace PerfView
             return true;
         }
 
-        private bool AllowNativateToWeb
+        private static void OpenExternalBrowser(Uri uri)
+        {
+            Process.Start(uri.ToString());
+        }
+
+        private bool AllowNavigateToWeb
         {
             get
             {
-                if (!m_AllowNativateToWeb)
+                if (!m_AllowNavigateToWeb)
                 {
-                    var naviateToWeb = App.UserConfigData["AllowNavigateToWeb"];
-                    m_AllowNativateToWeb = naviateToWeb == "true";
-                    if (!m_AllowNativateToWeb)
+                    var allowNavigateToWeb = App.UserConfigData["AllowNavigateToWeb"];
+                    m_AllowNavigateToWeb = allowNavigateToWeb == "true";
+                    if (!m_AllowNavigateToWeb)
                     {
                         var result = MessageBox.Show(
-                            "PerfView is about to fetch content from the web.\r\nIs this OK?",
+                            "PerfView is about to open content on the web.\r\nIs this OK?",
                             "Navigate to Web", MessageBoxButton.YesNo);
                         if (result == MessageBoxResult.Yes)
                         {
-                            m_AllowNativateToWeb = true;
+                            m_AllowNavigateToWeb = true;
                             App.UserConfigData["AllowNavigateToWeb"] = "true";
                         }
                     }
                 }
-                return m_AllowNativateToWeb;
+                return m_AllowNavigateToWeb;
             }
         }
 
-        private bool m_AllowNativateToWeb;
+        private bool m_AllowNavigateToWeb;
 
         private PerfViewDirectory m_CurrentDirectory;
         private static WebBrowserWindow s_Browser;
@@ -2425,14 +2474,14 @@ namespace PerfView
         }
 
         /// <summary>
-        /// A cached instance of <see cref="SymbolReaderHttpHandler"/>.
+        /// A cached instance of <see cref="SymbolReaderAuthenticationHandler"/>.
         /// We can't just keep a singleton because the App's SymbolReader
         /// occasionally gets recreated from scratch. We need a way to
         /// both configure an existing, live instance (when you enable
         /// or disable existing authentication providers) and to create
         /// new, configured handlers on demand.
         /// </summary>
-        private SymbolReaderHttpHandler _cachedSymbolReaderHandler;
+        private SymbolReaderAuthenticationHandler _cachedSymbolReaderHandler;
 
         /// <summary>
         /// Update the current handler, if there is one. If the
@@ -2442,7 +2491,7 @@ namespace PerfView
         /// </summary>
         private void UpdateSymbolReaderHandler()
         {
-            SymbolReaderHttpHandler handler = _cachedSymbolReaderHandler;
+            SymbolReaderAuthenticationHandler handler = _cachedSymbolReaderHandler;
             if (handler != null)
             {
                 if (handler.IsDisposed)
@@ -2466,11 +2515,11 @@ namespace PerfView
         /// <returns>The handler.</returns>
         private DelegatingHandler GetSymbolReaderHandler(TextWriter log)
         {
-            SymbolReaderHttpHandler handler = _cachedSymbolReaderHandler;
+            SymbolReaderAuthenticationHandler handler = _cachedSymbolReaderHandler;
             if (handler == null || handler.IsDisposed)
             {
                 log?.WriteLine("Creating authentication handler for {0}.", AuthenticationViewModel);
-                handler = _cachedSymbolReaderHandler = new SymbolReaderHttpHandler();
+                handler = _cachedSymbolReaderHandler = new SymbolReaderAuthenticationHandler();
             }
 
             handler.Configure(AuthenticationViewModel, log, this);

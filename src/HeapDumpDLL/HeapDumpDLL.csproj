@@ -37,6 +37,11 @@
     </Reference>
   </ItemGroup>
 
+  <!-- Override the version of System.Text.Json that is transitively included to address security issues. -->
+  <ItemGroup>
+    <PackageReference Include="System.Text.Json" Version="$(SystemTextJsonVersion)" />
+  </ItemGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\FastSerialization\FastSerialization.csproj" />
     <ProjectReference Include="..\MemoryGraph\MemoryGraph.csproj" />
@@ -48,6 +53,7 @@
     <Compile Include="..\HeapDump\GCHeapDump.cs" />
     <Compile Include="..\HeapDump\Utilities\*.cs" />
     <Compile Include="..\HeapDumpCommon\DotNetHeapInfo.cs" />
+    <Compile Include="..\HeapDumpCommon\GCHeapDumpNames.cs" />
     <Compile Include="..\PerfView\memory\ETWClrProfilerTraceEventParser.cs" />
     <Compile Include="..\PerfView\memory\JavaScriptDumpGraph.cs" />
     <Compile Include="..\PerfView\memory\JavaScriptHeapDumper.cs" />

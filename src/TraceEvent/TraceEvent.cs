@@ -5,6 +5,7 @@
 // It is available from http://www.codeplex.com/hyperAddin 
 // 
 using Microsoft.Diagnostics.Tracing.Parsers;
+using Microsoft.Diagnostics.Tracing.Parsers.GCDynamic;
 using Microsoft.Diagnostics.Tracing.Parsers.Kernel;
 using Microsoft.Diagnostics.Utilities;
 using System;
@@ -985,13 +986,67 @@ namespace Microsoft.Diagnostics.Tracing
             get
             {
                 // Handle the cloned case.
-                if(instanceContainerID != null)
+                if (instanceContainerID != null)
                 {
                     return instanceContainerID;
                 }
 
                 // Non-cloned case.
                 return traceEventSource.GetContainerID(eventRecord);
+            }
+        }
+
+        /// <summary>
+        /// The processor time of the event, if available
+        /// </summary>
+        public ulong ProcessorTime
+        {
+            get
+            {
+                if ((eventRecord->EventHeader.Flags & TraceEventNativeMethods.EVENT_HEADER_FLAG_NO_CPUTIME) != 0)
+                {
+                    return (eventRecord->EventHeader.KernelTime << sizeof(int)) + eventRecord->EventHeader.UserTime;
+                }
+                else
+                {
+                    return eventRecord->EventHeader.KernelTime + eventRecord->EventHeader.UserTime;
+                }
+            }
+        }
+
+        /// <summary>
+        /// The user time of the event, if available
+        /// </summary>
+        public uint? UserTime
+        {
+            get
+            {
+                if ((eventRecord->EventHeader.Flags & TraceEventNativeMethods.EVENT_HEADER_FLAG_NO_CPUTIME) != 0)
+                {
+                    return null;
+                }
+                else
+                {
+                    return eventRecord->EventHeader.UserTime;
+                }
+            }
+        }
+
+        /// <summary>
+        /// The kernel time of the event, if available
+        /// </summary>
+        public uint? KernelTime
+        {
+            get
+            {
+                if ((eventRecord->EventHeader.Flags & TraceEventNativeMethods.EVENT_HEADER_FLAG_NO_CPUTIME) != 0)
+                {
+                    return null;
+                }
+                else
+                {
+                    return eventRecord->EventHeader.KernelTime;
+                }
             }
         }
 
@@ -1047,7 +1102,7 @@ namespace Microsoft.Diagnostics.Tracing
                 {
 
                     int intValue = (int)value;
-                    if (intValue != 0 && payloadNames[index] == "IPv4Address")
+                    if (intValue != 0 && PayloadNames[index] == "IPv4Address")
                     {
                         return (intValue & 0xFF).ToString() + "." +
                                ((intValue >> 8) & 0xFF).ToString() + "." +
@@ -1066,7 +1121,7 @@ namespace Microsoft.Diagnostics.Tracing
 
                 if (value is long)
                 {
-                    if (payloadNames[index] == "objectId")      // TODO this is a hack.  
+                    if (PayloadNames[index] == "objectId")      // TODO this is a hack.  
                     {
                         return "0x" + ((long)value).ToString("x8");
                     }
@@ -1114,7 +1169,7 @@ namespace Microsoft.Diagnostics.Tracing
                 if (asByteArray != null)
                 {
                     StringBuilder sb = new StringBuilder();
-                    if (payloadNames[index].EndsWith("Address") || payloadNames[index].EndsWith("Addr"))
+                    if (PayloadNames[index].EndsWith("Address") || PayloadNames[index].EndsWith("Addr"))
                     {
                         if (asByteArray.Length == 16 && asByteArray[0] == 2 && asByteArray[1] == 0)         // FAMILY = 2 = IPv4
                         {
@@ -1328,6 +1383,7 @@ namespace Microsoft.Diagnostics.Tracing
             }
             return ret;
         }
+
         /// <summary>
         /// Pretty print the event.  It uses XML syntax.. 
         /// </summary>
@@ -1956,6 +2012,15 @@ namespace Microsoft.Diagnostics.Tracing
         /// Parsers with state are reasonably rare, the main examples are KernelTraceEventParser and ClrTraceEventParser.    
         /// </summary>
         protected internal virtual void SetState(object state) { }
+
+        protected internal TraceEvent CloneToTemplate()
+        {
+            TraceEvent ret = Clone();
+            ret.traceEventSource = null;
+            ret.eventRecord = null;
+            ret.Target = null;
+            return ret;
+        }
 
         #endregion
         #region Private
@@ -2903,6 +2968,12 @@ namespace Microsoft.Diagnostics.Tracing
                 declaredSet.Add(eventName, eventName);
             }
 
+            // These events are derived from GCDynamic and has no template associated with them
+            if (string.Equals(GetType().Name, nameof(GCDynamicTraceEventParser), StringComparison.OrdinalIgnoreCase))
+            {
+                declaredSet.Remove("CommittedUsage");
+            }
+
             var enumSet = new SortedDictionary<string, string>();
 
             // Make sure that we have all the event we should have 
@@ -3492,42 +3563,42 @@ namespace Microsoft.Diagnostics.Tracing
             try
             {
 #endif
-            if (anEvent.Target != null)
-            {
-                anEvent.Dispatch();
-            }
-
-            if (anEvent.next != null)
-            {
-                TraceEvent nextEvent = anEvent;
-                for (; ; )
+                if (anEvent.Target != null)
                 {
-                    nextEvent = nextEvent.next;
-                    if (nextEvent == null)
-                    {
-                        break;
-                    }
-
-                    if (nextEvent.Target != null)
-                    {
-                        nextEvent.eventRecord = anEvent.eventRecord;
-                        nextEvent.userData = anEvent.userData;
-                        nextEvent.eventIndex = anEvent.eventIndex;
-                        nextEvent.Dispatch();
-                        nextEvent.eventRecord = null;
-                    }
-                }
-            }
-            if (AllEvents != null)
-            {
-                if (unhandledEventTemplate == anEvent)
-                {
-                    unhandledEventTemplate.PrepForCallback();
+                    anEvent.Dispatch();
                 }
 
-                AllEvents(anEvent);
-            }
-            anEvent.eventRecord = null;
+                if (anEvent.next != null)
+                {
+                    TraceEvent nextEvent = anEvent;
+                    for (; ; )
+                    {
+                        nextEvent = nextEvent.next;
+                        if (nextEvent == null)
+                        {
+                            break;
+                        }
+
+                        if (nextEvent.Target != null)
+                        {
+                            nextEvent.eventRecord = anEvent.eventRecord;
+                            nextEvent.userData = anEvent.userData;
+                            nextEvent.eventIndex = anEvent.eventIndex;
+                            nextEvent.Dispatch();
+                            nextEvent.eventRecord = null;
+                        }
+                    }
+                }
+                if (AllEvents != null)
+                {
+                    if (unhandledEventTemplate == anEvent)
+                    {
+                        unhandledEventTemplate.PrepForCallback();
+                    }
+
+                    AllEvents(anEvent);
+                }
+                anEvent.eventRecord = null;
 #if DEBUG
             }
             catch (Exception e)
@@ -3546,7 +3617,7 @@ namespace Microsoft.Diagnostics.Tracing
         internal TraceEvent Lookup(TraceEventNativeMethods.EVENT_RECORD* eventRecord)
         {
             int lastChanceHandlerChecked = 0;       // We have checked no last chance handlers to begin with
-            RetryLookup:
+        RetryLookup:
             ushort eventID = eventRecord->EventHeader.Id;
 
             //double relTime = QPCTimeToRelMSec(eventRecord->EventHeader.TimeStamp);
@@ -3584,7 +3655,6 @@ namespace Microsoft.Diagnostics.Tracing
                         curTemplate.eventRecord = eventRecord;
                         curTemplate.userData = eventRecord->UserData;
                         curTemplate.eventIndex = currentID;
-                        currentID = currentID + 1;      // TODO overflow. 
 
                         if ((((int)currentID) & 0xFFFF) == 0) // Every 64K events allow Thread.Interrupt.  
                         {
@@ -3608,9 +3678,19 @@ namespace Microsoft.Diagnostics.Tracing
                         else
                         {
                             Debug.Assert(curTemplate.ProviderGuid == eventRecord->EventHeader.ProviderId);
-                            Debug.Assert((ushort)curTemplate.eventID == eventRecord->EventHeader.Id);
+
+                            // Make sure that the assert below doesn't fail by checking if _any_ of the event header ids match.
+                            bool gcDynamicTemplateEventHeaderMatch =
+                                 eventRecord->EventHeader.Id == (ushort)GCDynamicEventBase.GCDynamicTemplate.ID ||
+                                 eventRecord->EventHeader.Id == (ushort)GCDynamicEventBase.CommittedUsageTemplate.ID;
+
+                            // Ignore the failure for GC dynamic events because they are all
+                            // dispatched through the same template and we vary the event ID.
+                            Debug.Assert((ushort)curTemplate.eventID == eventRecord->EventHeader.Id ||
+                                (curTemplate.ProviderGuid == GCDynamicTraceEventParser.ProviderGuid && gcDynamicTemplateEventHeaderMatch));
                         }
 #endif
+                        currentID = currentID + 1;      // TODO overflow.
                         return curTemplate;
                     }
                     else
@@ -3630,7 +3710,6 @@ namespace Microsoft.Diagnostics.Tracing
             unhandledEventTemplate.userData = eventRecord->UserData;
             unhandledEventTemplate.eventIndex = currentID;
             unhandledEventTemplate.lookupAsClassic = unhandledEventTemplate.IsClassicProvider;
-            currentID = currentID + 1;                  // TODO overflow.
             if ((((int)currentID) & 0xFFFF) == 0)       // Every 64K events allow Thread.Interrupt.  
             {
                 System.Threading.Thread.Sleep(0);
@@ -3665,6 +3744,7 @@ namespace Microsoft.Diagnostics.Tracing
                 }
                 while (lastChanceHandlerChecked < lastChanceHandlers.Length);
             }
+            currentID = currentID + 1;                  // TODO overflow.
             return unhandledEventTemplate;
         }
         internal unsafe TraceEvent LookupTemplate(Guid guid, TraceEventID eventID_)
